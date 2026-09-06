@@ -136,10 +136,10 @@ let audioContext: AudioContext | undefined,
   noiseBuffer: AudioBuffer | undefined;
 const lookDirection = new THREE.Vector3(),
   targetCenter = new THREE.Vector3();
-// Recoil state for cumulative kick during automatic fire
-let recoilPitch = 0,
-  recoilX = 0,
-  recoilY = 0;
+// Bullet spread state - increases during sustained fire, recovers when not firing
+let spreadAngle = 0,
+  spreadX = 0,
+  spreadY = 0;
 const active = () => state === "combat" || state === "intermission";
 
 function initializeAudio() {
@@ -498,40 +498,45 @@ function fire() {
   shake = weapon === "MG" ? 0.025 : 0.1;
   sound(weapon === "MG" ? "gun" : "heavy");
   
-  // Apply recoil: pitch up and random kick
-  const recoilStrength = weapon === "MG" ? 0.0018 : weapon === "CANNON" ? 0.035 : 0.025;
-  const recoilKick = weapon === "MG" ? 0.0008 : weapon === "CANNON" ? 0.015 : 0.01;
-  recoilPitch += recoilStrength + Math.random() * recoilKick;
-  recoilX += (Math.random() - 0.5) * recoilKick * 2;
-  recoilY += (Math.random() - 0.5) * recoilKick * 2;
+  // Increase spread during sustained fire - more for MG, less for heavy weapons
+  const spreadBuildup = weapon === "MG" ? 0.0035 : weapon === "CANNON" ? 0.0012 : 0.0018;
+  const spreadKick = weapon === "MG" ? 0.0015 : weapon === "CANNON" ? 0.0004 : 0.0006;
+  spreadAngle += spreadBuildup + Math.random() * spreadKick;
+  spreadX += (Math.random() - 0.5) * spreadKick * 2;
+  spreadY += (Math.random() - 0.5) * spreadKick * 2;
   
   camera.getWorldDirection(lookDirection);
-  // Apply recoil offset to aim direction
-  lookDirection.x += recoilX;
-  lookDirection.y += recoilPitch;
-  lookDirection.z -= Math.abs(recoilPitch) * 0.3;
-  lookDirection.normalize();
+  // Apply spread offset to aim direction
+  const aimDirection = lookDirection.clone();
+  aimDirection.x += spreadX;
+  aimDirection.y += spreadY;
+  // Add random spread within the current spread angle
+  const randomSpread = (Math.random() - 0.5) * spreadAngle;
+  const randomYaw = (Math.random() - 0.5) * spreadAngle;
+  aimDirection.applyAxisAngle(new THREE.Vector3(1, 0, 0), randomSpread);
+  aimDirection.applyAxisAngle(new THREE.Vector3(0, 1, 0), randomYaw);
+  aimDirection.normalize();
   
   const origin = playerPosition.clone();
   if (weapon === "MG") {
     enemyLayer.updateMatrixWorld(true);
-    raycaster.set(origin, lookDirection);
+    raycaster.set(origin, aimDirection);
     raycaster.far = 750;
     const hit = raycaster
       .intersectObjects(enemyLayer.children, true)
       .find((hit) => !hit.object.userData.enemy.dead);
     const blocked = obstructionDistance(
       origin,
-      lookDirection,
+      aimDirection,
       hit?.distance ?? 750,
     );
     const distance = Math.min(hit?.distance ?? 750, blocked);
-    const end = origin.clone().addScaledVector(lookDirection, distance);
+    const end = origin.clone().addScaledVector(aimDirection, distance);
     const muzzle = new THREE.Vector3(0.45, -0.43, -2)
       .applyQuaternion(camera.quaternion)
       .add(origin);
-    // Create individual tracer rounds instead of continuous line
-    addTracer(muzzle, end, 0xffd47c, 0.12);
+    // Create individual tracer rounds with shorter lifetime for clearly visible separate bullets
+    addTracer(muzzle, end, 0xffd47c, 0.08);
     if (hit && hit.distance < blocked)
       hitEnemy(hit.object.userData.enemy, definition.damage, weapon, hit.point);
     else if (Number.isFinite(blocked)) sparks(end);
@@ -543,9 +548,9 @@ function fire() {
       }),
     );
     mesh.scale.setScalar(0.22);
-    mesh.position.copy(origin).addScaledVector(lookDirection, 2);
+    mesh.position.copy(origin).addScaledVector(aimDirection, 2);
     projectileLayer.add(mesh);
-    const velocity = lookDirection
+    const velocity = aimDirection
       .clone()
       .multiplyScalar(weapon === "ROCKET" ? 150 : 230);
     shots.push({
@@ -707,7 +712,7 @@ function hurtPlayer(amount: number) {
   message("BUNKER HIT / −" + amount + " INTEGRITY");
 }
 function updateShots(dt: number) {
-  const gravity = 9.8; // m/s² for realistic bullet drop
+  const gravity = 24.5; // Increased gravity for more noticeable bullet drop over distance
   for (let i = shots.length - 1; i >= 0; i--) {
     const shot = shots[i];
     shot.previous.copy(shot.mesh.position);
@@ -715,8 +720,8 @@ function updateShots(dt: number) {
     if (shot.owner === "player" && (shot.weapon === "CANNON" || shot.weapon === "ROCKET")) {
       shot.velocity.y -= gravity * dt;
     } else if (shot.owner === "enemy") {
-      // Enemy projectiles also experience gravity
-      shot.velocity.y -= gravity * 0.5 * dt;
+      // Enemy projectiles also experience gravity (reduced for gameplay balance)
+      shot.velocity.y -= gravity * 0.3 * dt;
     }
     shot.mesh.position.addScaledVector(shot.velocity, dt);
     shot.life -= dt;
@@ -864,11 +869,11 @@ function update(dt: number) {
   switchTime = Math.max(0, switchTime - dt);
   cooldown = cooldown <= dt + 1e-6 ? 0 : cooldown - dt;
   
-  // Recoil recovery - gradually return to zero
-  const recoilRecovery = weapon === "MG" ? 2.8 : weapon === "CANNON" ? 1.2 : 1.8;
-  recoilPitch = THREE.MathUtils.lerp(recoilPitch, 0, Math.min(1, recoilRecovery * dt));
-  recoilX = THREE.MathUtils.lerp(recoilX, 0, Math.min(1, recoilRecovery * dt));
-  recoilY = THREE.MathUtils.lerp(recoilY, 0, Math.min(1, recoilRecovery * dt));
+  // Spread recovery - gradually return to zero (faster when not firing)
+  const spreadRecovery = weapon === "MG" ? 3.5 : weapon === "CANNON" ? 1.8 : 2.4;
+  spreadAngle = THREE.MathUtils.lerp(spreadAngle, 0, Math.min(1, spreadRecovery * dt));
+  spreadX = THREE.MathUtils.lerp(spreadX, 0, Math.min(1, spreadRecovery * dt));
+  spreadY = THREE.MathUtils.lerp(spreadY, 0, Math.min(1, spreadRecovery * dt));
   
   if (reload > 0) {
     reload -= dt;
@@ -1034,11 +1039,7 @@ function animate(now: number) {
   }
   battlefield.update(worldTime);
   camera.position.copy(playerPosition);
-  // Apply recoil to camera view
-  if (active() && (recoilPitch !== 0 || recoilX !== 0)) {
-    camera.rotation.x += recoilPitch;
-    camera.rotation.y += recoilX;
-  }
+  // No camera recoil - spread affects bullet trajectory only, not view
   if (shake > 0 && active()) {
     camera.position.y += (Math.random() - 0.5) * shake;
     shake = Math.max(0, shake - dt);
