@@ -1,3 +1,4 @@
+import * as THREE from "three";
 import {
   bearing,
   bearingDelta,
@@ -6,6 +7,7 @@ import {
   RADAR_RING_INTERVAL_METERS,
   RADAR_RADIUS_PERCENT,
 } from "./combat";
+import type { Weapon } from "./types";
 
 export const screenMarkup = `
 <div id="hud">
@@ -59,7 +61,9 @@ export class CombatHud {
   private damageTime = 0;
   private hitTime = 0;
   private currentSpread = 0;
-  constructor() {
+  private camera: THREE.Camera;
+  constructor(camera: THREE.Camera) {
+    this.camera = camera;
     document
       .querySelectorAll<HTMLElement>("#hud [id]")
       .forEach((el) => this.elements.set(el.id, el));
@@ -242,28 +246,47 @@ export class CombatHud {
     this.el("hitMarker").style.opacity = this.hitTime > 0 ? "1" : "0";
     this.el("reticle").classList.toggle("zoom", s.zoom);
     this.el("reticle").dataset.weapon = s.weapon;
-    // Update dynamic crosshair based on spread
+    // Update dynamic crosshair to match bullet spread circumference
     this.currentSpread = s.spread || 0;
-    this.updateCrosshairSpread(s.weapon === "MG" ? 28 + this.currentSpread * 40 : s.weapon === "CANNON" ? 34 + this.currentSpread * 30 : 46 + this.currentSpread * 35);
+    const fovRad = THREE.MathUtils.degToRad(this.camera.fov);
+    const pixelPerRadian = (window.innerHeight / 2) / Math.tan(fovRad / 2);
+    const spreadPx = this.currentSpread * pixelPerRadian;
+    const range = CombatHud.reticleRange[s.weapon as Weapon] ?? CombatHud.reticleRange.MG;
+    const size = THREE.MathUtils.clamp(range.min + spreadPx, range.min, range.max);
+    this.updateCrosshairSpread(size);
   }
+  // Base/max on-screen size (px) of the reticle per weapon, so heavy weapons
+  // keep a clean, readable shape instead of collapsing to the spread floor.
+  private static readonly reticleRange: Record<Weapon, { min: number; max: number }> = {
+    MG: { min: 6, max: 90 },
+    CANNON: { min: 30, max: 46 },
+    ROCKET: { min: 42, max: 56 },
+  };
   updateCrosshairSpread(size: number) {
     const reticle = this.el("reticle");
-    reticle.style.width = `${Math.min(60, size)}px`;
-    reticle.style.height = `${Math.min(60, size)}px`;
-    // Update crosshair element positions
-    const arms = reticle.querySelectorAll("i");
+    reticle.style.width = `${size}px`;
+    reticle.style.height = `${size}px`;
+    // Keep each tick centered on its cross-axis as the box resizes
+    const half = `${size / 2 - 0.5}px`;
+    const arms = reticle.querySelectorAll<HTMLElement>("i");
     arms.forEach((arm, i) => {
-      const offset = size / 2 - 4;
-      if (i === 0) arm.style.top = "0";
-      if (i === 1) arm.style.bottom = "0";
-      if (i === 2) arm.style.left = "0";
-      if (i === 3) arm.style.right = "0";
+      if (i === 0) {
+        arm.style.top = "0";
+        arm.style.left = half;
+      }
+      if (i === 1) {
+        arm.style.bottom = "0";
+        arm.style.left = half;
+      }
+      if (i === 2) {
+        arm.style.left = "0";
+        arm.style.top = half;
+      }
+      if (i === 3) {
+        arm.style.right = "0";
+        arm.style.top = half;
+      }
     });
-    // Update center dot position
-    const centerDot = reticle.querySelector("b") as HTMLElement;
-    if (centerDot) {
-      centerDot.style.left = `${size / 2 - 1.5}px`;
-      centerDot.style.top = `${size / 2 - 1.5}px`;
-    }
+    // Center dot centering is handled entirely in CSS (left/top 50% + margin).
   }
 }

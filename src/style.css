@@ -543,25 +543,31 @@ kbd {
 }
 .reticle b {
   position: absolute;
-  left: 15px;
-  top: 15px;
+  left: 50%;
+  top: 50%;
   width: 3px;
   height: 3px;
+  margin: -1.5px 0 0 -1.5px;
   background: #f8d491;
   border-radius: 50%;
 }
-.reticle[data-weapon="CANNON"] {
-  border: 1px solid #f8d49155;
+.reticle[data-weapon="MG"] {
+  border: 1px solid #f3e5c6aa;
   border-radius: 50%;
+}
+.reticle[data-weapon="MG"] i {
+  display: none;
+}
+.reticle[data-weapon="CANNON"] {
+  border: 1px solid #f8d491cc;
+  border-radius: 50%;
+}
+.reticle[data-weapon="CANNON"] i {
+  background: #f8d491cc;
 }
 .reticle[data-weapon="ROCKET"] {
   border: 1px dashed #f8d49199;
-  width: 46px;
-  height: 46px;
-}
-.reticle[data-weapon="ROCKET"] b {
-  left: 21px;
-  top: 21px;
+  border-radius: 50%;
 }
 .reticle[data-weapon="ROCKET"] i {
   display: none;
