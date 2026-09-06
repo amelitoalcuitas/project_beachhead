@@ -136,6 +136,10 @@ let audioContext: AudioContext | undefined,
   noiseBuffer: AudioBuffer | undefined;
 const lookDirection = new THREE.Vector3(),
   targetCenter = new THREE.Vector3();
+// Recoil state for cumulative kick during automatic fire
+let recoilPitch = 0,
+  recoilX = 0,
+  recoilY = 0;
 const active = () => state === "combat" || state === "intermission";
 
 function initializeAudio() {
@@ -493,7 +497,21 @@ function fire() {
   weaponView.fire();
   shake = weapon === "MG" ? 0.025 : 0.1;
   sound(weapon === "MG" ? "gun" : "heavy");
+  
+  // Apply recoil: pitch up and random kick
+  const recoilStrength = weapon === "MG" ? 0.0018 : weapon === "CANNON" ? 0.035 : 0.025;
+  const recoilKick = weapon === "MG" ? 0.0008 : weapon === "CANNON" ? 0.015 : 0.01;
+  recoilPitch += recoilStrength + Math.random() * recoilKick;
+  recoilX += (Math.random() - 0.5) * recoilKick * 2;
+  recoilY += (Math.random() - 0.5) * recoilKick * 2;
+  
   camera.getWorldDirection(lookDirection);
+  // Apply recoil offset to aim direction
+  lookDirection.x += recoilX;
+  lookDirection.y += recoilPitch;
+  lookDirection.z -= Math.abs(recoilPitch) * 0.3;
+  lookDirection.normalize();
+  
   const origin = playerPosition.clone();
   if (weapon === "MG") {
     enemyLayer.updateMatrixWorld(true);
@@ -512,7 +530,8 @@ function fire() {
     const muzzle = new THREE.Vector3(0.45, -0.43, -2)
       .applyQuaternion(camera.quaternion)
       .add(origin);
-    addTracer(muzzle, end, 0xffd47c);
+    // Create individual tracer rounds instead of continuous line
+    addTracer(muzzle, end, 0xffd47c, 0.12);
     if (hit && hit.distance < blocked)
       hitEnemy(hit.object.userData.enemy, definition.damage, weapon, hit.point);
     else if (Number.isFinite(blocked)) sparks(end);
@@ -526,11 +545,12 @@ function fire() {
     mesh.scale.setScalar(0.22);
     mesh.position.copy(origin).addScaledVector(lookDirection, 2);
     projectileLayer.add(mesh);
+    const velocity = lookDirection
+      .clone()
+      .multiplyScalar(weapon === "ROCKET" ? 150 : 230);
     shots.push({
       mesh,
-      velocity: lookDirection
-        .clone()
-        .multiplyScalar(weapon === "ROCKET" ? 150 : 230),
+      velocity,
       damage: definition.damage,
       splash: definition.splash,
       life: 7,
@@ -687,11 +707,17 @@ function hurtPlayer(amount: number) {
   message("BUNKER HIT / −" + amount + " INTEGRITY");
 }
 function updateShots(dt: number) {
+  const gravity = 9.8; // m/s² for realistic bullet drop
   for (let i = shots.length - 1; i >= 0; i--) {
     const shot = shots[i];
     shot.previous.copy(shot.mesh.position);
-    if (shot.owner === "player" && shot.weapon === "CANNON")
-      shot.velocity.y -= 2 * dt;
+    // Apply bullet drop to projectiles (CANNON and ROCKET)
+    if (shot.owner === "player" && (shot.weapon === "CANNON" || shot.weapon === "ROCKET")) {
+      shot.velocity.y -= gravity * dt;
+    } else if (shot.owner === "enemy") {
+      // Enemy projectiles also experience gravity
+      shot.velocity.y -= gravity * 0.5 * dt;
+    }
     shot.mesh.position.addScaledVector(shot.velocity, dt);
     shot.life -= dt;
     let hit = false,
@@ -837,6 +863,13 @@ function update(dt: number) {
   }
   switchTime = Math.max(0, switchTime - dt);
   cooldown = cooldown <= dt + 1e-6 ? 0 : cooldown - dt;
+  
+  // Recoil recovery - gradually return to zero
+  const recoilRecovery = weapon === "MG" ? 2.8 : weapon === "CANNON" ? 1.2 : 1.8;
+  recoilPitch = THREE.MathUtils.lerp(recoilPitch, 0, Math.min(1, recoilRecovery * dt));
+  recoilX = THREE.MathUtils.lerp(recoilX, 0, Math.min(1, recoilRecovery * dt));
+  recoilY = THREE.MathUtils.lerp(recoilY, 0, Math.min(1, recoilRecovery * dt));
+  
   if (reload > 0) {
     reload -= dt;
     if (reload <= 0) completeReload();
@@ -1001,6 +1034,11 @@ function animate(now: number) {
   }
   battlefield.update(worldTime);
   camera.position.copy(playerPosition);
+  // Apply recoil to camera view
+  if (active() && (recoilPitch !== 0 || recoilX !== 0)) {
+    camera.rotation.x += recoilPitch;
+    camera.rotation.y += recoilX;
+  }
   if (shake > 0 && active()) {
     camera.position.y += (Math.random() - 0.5) * shake;
     shake = Math.max(0, shake - dt);
