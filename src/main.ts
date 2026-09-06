@@ -519,27 +519,25 @@ function fire() {
   
   const origin = playerPosition.clone();
   if (weapon === "MG") {
-    enemyLayer.updateMatrixWorld(true);
-    raycaster.set(origin, aimDirection);
-    raycaster.far = 750;
-    const hit = raycaster
-      .intersectObjects(enemyLayer.children, true)
-      .find((hit) => !hit.object.userData.enemy.dead);
-    const blocked = obstructionDistance(
-      origin,
-      aimDirection,
-      hit?.distance ?? 750,
+    // Create individual visible projectile for MG instead of tracer line
+    const mesh = new THREE.Mesh(
+      sphereGeometry,
+      new THREE.MeshBasicMaterial({ color: 0xffd47c }),
     );
-    const distance = Math.min(hit?.distance ?? 750, blocked);
-    const end = origin.clone().addScaledVector(aimDirection, distance);
-    const muzzle = new THREE.Vector3(0.45, -0.43, -2)
-      .applyQuaternion(camera.quaternion)
-      .add(origin);
-    // Create individual tracer rounds with shorter lifetime for clearly visible separate bullets
-    addTracer(muzzle, end, 0xffd47c, 0.08);
-    if (hit && hit.distance < blocked)
-      hitEnemy(hit.object.userData.enemy, definition.damage, weapon, hit.point);
-    else if (Number.isFinite(blocked)) sparks(end);
+    mesh.scale.setScalar(0.12);
+    mesh.position.copy(origin).addScaledVector(aimDirection, 1.5);
+    projectileLayer.add(mesh);
+    const velocity = aimDirection.clone().multiplyScalar(650);
+    shots.push({
+      mesh,
+      velocity,
+      damage: definition.damage,
+      splash: 0,
+      life: 1.2,
+      owner: "player",
+      weapon,
+      previous: mesh.position.clone(),
+    });
   } else {
     const mesh = new THREE.Mesh(
       sphereGeometry,
@@ -716,8 +714,8 @@ function updateShots(dt: number) {
   for (let i = shots.length - 1; i >= 0; i--) {
     const shot = shots[i];
     shot.previous.copy(shot.mesh.position);
-    // Apply bullet drop to projectiles (CANNON and ROCKET)
-    if (shot.owner === "player" && (shot.weapon === "CANNON" || shot.weapon === "ROCKET")) {
+    // Apply bullet drop to projectiles (CANNON, ROCKET, and MG)
+    if (shot.owner === "player") {
       shot.velocity.y -= gravity * dt;
     } else if (shot.owner === "enemy") {
       // Enemy projectiles also experience gravity (reduced for gameplay balance)
@@ -789,12 +787,15 @@ function updateShots(dt: number) {
         explode(shot.mesh.position, shot.weapon === "ROCKET" ? 3 : 1.5);
       }
     }
-    addTracer(
-      shot.previous,
-      shot.mesh.position,
-      shot.owner === "enemy" ? 0xff8060 : 0xffce77,
-      0.06,
-    );
+    // Only add tracer for cannon/rocket projectiles, not MG bullets
+    if (shot.weapon !== "MG") {
+      addTracer(
+        shot.previous,
+        shot.mesh.position,
+        shot.owner === "enemy" ? 0xff8060 : 0xffce77,
+        0.06,
+      );
+    }
     if (hit || shot.life <= 0) {
       releaseMesh(shot.mesh);
       shots.splice(i, 1);
@@ -1085,12 +1086,19 @@ window.addEventListener("keydown", (event) => {
     heldKeys.add(event.key);
   }
   if (event.key.toLowerCase() === "r") reloadWeapon();
+  if (event.code === "Space") {
+    trigger = true;
+    fire();
+  }
   const selected = (
     { "1": "MG", "2": "CANNON", "3": "ROCKET" } as Record<string, Weapon>
   )[event.key];
   if (selected) selectWeapon(selected);
 });
-window.addEventListener("keyup", (event) => heldKeys.delete(event.key));
+window.addEventListener("keyup", (event) => {
+  if (event.code === "Space") trigger = false;
+  else heldKeys.delete(event.key);
+});
 renderer.domElement.addEventListener("mousedown", (event) => {
   if (state !== "combat") return;
   if (event.button === 0) {
