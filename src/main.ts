@@ -44,6 +44,11 @@ interface Tracer {
   line: THREE.Line;
   life: number;
 }
+interface MuzzleSmoke {
+  mesh: THREE.Mesh;
+  life: number;
+  velocity: THREE.Vector3;
+}
 
 const app = document.querySelector<HTMLElement>("#app")!;
 app.innerHTML = screenMarkup;
@@ -98,14 +103,16 @@ controls.minPolarAngle = THREE.MathUtils.degToRad(5);
 controls.maxPolarAngle = THREE.MathUtils.degToRad(125);
 const enemyLayer = new THREE.Group(),
   projectileLayer = new THREE.Group(),
-  effectLayer = new THREE.Group();
-scene.add(enemyLayer, projectileLayer, effectLayer);
+  effectLayer = new THREE.Group(),
+  smokeLayer = new THREE.Group();
+scene.add(enemyLayer, projectileLayer, effectLayer, smokeLayer);
 const raycaster = new THREE.Raycaster();
 const sphereGeometry = new THREE.SphereGeometry(1, 8, 6);
 const enemies: Enemy[] = [],
   shots: Shot[] = [],
   effects: Effect[] = [],
-  tracers: Tracer[] = [];
+  tracers: Tracer[] = [],
+  muzzleSmokes: MuzzleSmoke[] = [];
 const heldKeys = new Set<string>();
 let state: State = "title",
   pausedState: State = "combat";
@@ -231,7 +238,8 @@ function clearRun() {
     tracer.line.geometry.dispose();
     (tracer.line.material as THREE.Material).dispose();
   }
-  enemies.length = shots.length = effects.length = tracers.length = 0;
+  for (const smoke of muzzleSmokes) releaseMesh(smoke.mesh);
+  enemies.length = shots.length = effects.length = tracers.length = muzzleSmokes.length = 0;
   trigger = zoom = false;
   heldKeys.clear();
   accumulator = 0;
@@ -405,6 +413,28 @@ function sparks(position: THREE.Vector3) {
       0,
     );
 }
+function addMuzzleSmoke(position: THREE.Vector3, weapon: Weapon) {
+  if (muzzleSmokes.length >= 40) return;
+  const size = weapon === "MG" ? 0.35 : weapon === "CANNON" ? 0.65 : 0.55;
+  const mesh = new THREE.Mesh(
+    sphereGeometry,
+    new THREE.MeshBasicMaterial({
+      color: 0x888888,
+      transparent: true,
+      opacity: 0.7,
+      depthWrite: false,
+    }),
+  );
+  mesh.position.copy(position);
+  mesh.scale.setScalar(size);
+  smokeLayer.add(mesh);
+  const velocity = new THREE.Vector3(
+    (Math.random() - 0.5) * 2,
+    Math.random() * 3 + 2,
+    (Math.random() - 0.5) * 2,
+  );
+  muzzleSmokes.push({ mesh, velocity, life: 1.8 });
+}
 function addTracer(
   start: THREE.Vector3,
   end: THREE.Vector3,
@@ -527,6 +557,10 @@ function fire() {
   // Calculate muzzle position based on weapon type
   const muzzleOffset = weapon === "MG" ? 2.8 : weapon === "CANNON" ? 3.5 : 3.2;
   const origin = playerPosition.clone().addScaledVector(lookDirection, muzzleOffset);
+  
+  // Add visible muzzle smoke at the muzzle position
+  addMuzzleSmoke(origin, weapon);
+  
   if (weapon === "MG") {
     // Create individual visible projectile for MG instead of tracer line
     const mesh = new THREE.Mesh(
@@ -835,6 +869,20 @@ function updateEffects(dt: number) {
       tracers.splice(i, 1);
     }
   }
+  // Update muzzle smoke particles
+  for (let i = muzzleSmokes.length - 1; i >= 0; i--) {
+    const smoke = muzzleSmokes[i];
+    smoke.life -= dt;
+    smoke.mesh.position.addScaledVector(smoke.velocity, dt);
+    smoke.velocity.multiplyScalar(Math.exp(-dt * 0.8));
+    smoke.mesh.scale.addScalar(0.4 * dt);
+    (smoke.mesh.material as THREE.MeshBasicMaterial).opacity =
+      Math.max(0, smoke.life / 1.8) * 0.7;
+    if (smoke.life <= 0) {
+      releaseMesh(smoke.mesh);
+      muzzleSmokes.splice(i, 1);
+    }
+  }
 }
 function beginWave() {
   state = "combat";
@@ -989,6 +1037,7 @@ function updateHud(dt: number) {
     switching: switchTime > 0,
     zoom,
     intermission,
+    spread: spreadAngle,
     contacts: enemies
       .filter((enemy) => !enemy.dead)
       .map((enemy) => ({

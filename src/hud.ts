@@ -48,6 +48,7 @@ interface HudSnapshot {
   zoom: boolean;
   intermission: number;
   contacts: Contact[];
+  spread: number;
 }
 
 export class CombatHud {
@@ -57,6 +58,7 @@ export class CombatHud {
   private dots = new Map<number, HTMLElement>();
   private damageTime = 0;
   private hitTime = 0;
+  private currentSpread = 0;
   constructor() {
     document
       .querySelectorAll<HTMLElement>("#hud [id]")
@@ -240,5 +242,28 @@ export class CombatHud {
     this.el("hitMarker").style.opacity = this.hitTime > 0 ? "1" : "0";
     this.el("reticle").classList.toggle("zoom", s.zoom);
     this.el("reticle").dataset.weapon = s.weapon;
+    // Update dynamic crosshair based on spread
+    this.currentSpread = s.spread || 0;
+    this.updateCrosshairSpread(s.weapon === "MG" ? 28 + this.currentSpread * 40 : s.weapon === "CANNON" ? 34 + this.currentSpread * 30 : 46 + this.currentSpread * 35);
+  }
+  updateCrosshairSpread(size: number) {
+    const reticle = this.el("reticle");
+    reticle.style.width = `${Math.min(60, size)}px`;
+    reticle.style.height = `${Math.min(60, size)}px`;
+    // Update crosshair element positions
+    const arms = reticle.querySelectorAll("i");
+    arms.forEach((arm, i) => {
+      const offset = size / 2 - 4;
+      if (i === 0) arm.style.top = "0";
+      if (i === 1) arm.style.bottom = "0";
+      if (i === 2) arm.style.left = "0";
+      if (i === 3) arm.style.right = "0";
+    });
+    // Update center dot position
+    const centerDot = reticle.querySelector("b") as HTMLElement;
+    if (centerDot) {
+      centerDot.style.left = `${size / 2 - 1.5}px`;
+      centerDot.style.top = `${size / 2 - 1.5}px`;
+    }
   }
 }
