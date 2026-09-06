@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  ballisticVelocity,
   bearing,
   bearingDelta,
   canEngage,
+  GROUND_IMPACT_AUDIBLE_DISTANCE,
+  GROUND_IMPACT_FULL_VOLUME_DISTANCE,
+  groundImpactVolume,
   segmentHit,
   terrainIntersection,
 } from "../src/combat.ts";
@@ -119,4 +123,36 @@ test("collision handles stationary rounds and starts inside targets", () => {
   const origin = { x: 0, y: 0, z: 0 };
   assert.equal(segmentHit(origin, origin, origin, 2), 0);
   assert.equal(segmentHit(origin, origin, { x: 10, y: 0, z: 0 }, 2), null);
+});
+
+test("ground impact volume falls off with distance", () => {
+  assert.equal(groundImpactVolume(0), 1);
+  assert.equal(groundImpactVolume(GROUND_IMPACT_FULL_VOLUME_DISTANCE), 1);
+  assert.equal(groundImpactVolume(GROUND_IMPACT_AUDIBLE_DISTANCE), 0);
+  assert.equal(groundImpactVolume(Infinity), 0);
+
+  const nearVolume = groundImpactVolume(75);
+  const farVolume = groundImpactVolume(250);
+  assert.ok(nearVolume > farVolume);
+  assert.ok(farVolume > 0);
+});
+
+test("vehicle projectiles compensate for gravity at their stopping distances", () => {
+  const gravity = 24.5 * 0.3;
+  const speed = 55;
+  for (const distance of [45, 75, 115]) {
+    const origin = { x: 0, y: 3, z: -distance };
+    const target = { x: 0, y: 7, z: 0 };
+    const velocity = ballisticVelocity(origin, target, speed, gravity);
+    const flightTime = distance / velocity.z;
+    const impactY =
+      origin.y +
+      velocity.y * flightTime -
+      0.5 * gravity * flightTime * flightTime;
+
+    assert.ok(Math.abs(impactY - target.y) < 1e-9);
+    assert.ok(
+      Math.abs(Math.hypot(velocity.x, velocity.y, velocity.z) - speed) < 1e-9,
+    );
+  }
 });

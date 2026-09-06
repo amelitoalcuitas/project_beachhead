@@ -29,6 +29,21 @@ export function radarContactPosition(relativeBearing: number, distance: number) 
 export function distanceBetween(a: Position, b: Position) {
   return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 }
+
+export const GROUND_IMPACT_FULL_VOLUME_DISTANCE = 20;
+export const GROUND_IMPACT_AUDIBLE_DISTANCE = 350;
+
+export function groundImpactVolume(distance: number) {
+  if (distance <= GROUND_IMPACT_FULL_VOLUME_DISTANCE) return 1;
+  if (distance >= GROUND_IMPACT_AUDIBLE_DISTANCE) return 0;
+
+  const falloff =
+    1 -
+    (distance - GROUND_IMPACT_FULL_VOLUME_DISTANCE) /
+      (GROUND_IMPACT_AUDIBLE_DISTANCE - GROUND_IMPACT_FULL_VOLUME_DISTANCE);
+  return falloff * falloff;
+}
+
 export function canEngage(
   origin: Position,
   target: Position,
@@ -36,6 +51,45 @@ export function canEngage(
   clearSight: boolean,
 ) {
   return clearSight && distanceBetween(origin, target) <= range;
+}
+
+export function ballisticVelocity(
+  origin: Position,
+  target: Position,
+  speed: number,
+  gravity: number,
+): Position {
+  const dx = target.x - origin.x,
+    dy = target.y - origin.y,
+    dz = target.z - origin.z;
+  const directDistance = Math.hypot(dx, dy, dz);
+  if (speed <= 0 || directDistance === 0) return { x: 0, y: 0, z: 0 };
+
+  const horizontalDistance = Math.hypot(dx, dz);
+  const directVelocity = () => ({
+    x: (dx / directDistance) * speed,
+    y: (dy / directDistance) * speed,
+    z: (dz / directDistance) * speed,
+  });
+  if (gravity <= 0 || horizontalDistance === 0) return directVelocity();
+
+  const speedSquared = speed * speed;
+  const discriminant =
+    speedSquared * speedSquared -
+    gravity *
+      (gravity * horizontalDistance * horizontalDistance +
+        2 * dy * speedSquared);
+  if (discriminant < 0) return directVelocity();
+
+  const launchSlope =
+    (speedSquared - Math.sqrt(discriminant)) /
+    (gravity * horizontalDistance);
+  const horizontalSpeed = speed / Math.sqrt(1 + launchSlope * launchSlope);
+  return {
+    x: (dx / horizontalDistance) * horizontalSpeed,
+    y: launchSlope * horizontalSpeed,
+    z: (dz / horizontalDistance) * horizontalSpeed,
+  };
 }
 
 export function terrainIntersection(

@@ -5,7 +5,14 @@ import { WeaponView } from "./weapon-view";
 import { CombatHud, screenMarkup } from "./hud";
 import { weapons, wavePlans, specs } from "./content";
 import { enemyModel, animateEnemy } from "./enemy-models";
-import { bearing, canEngage, segmentHit, terrainIntersection } from "./combat";
+import {
+  ballisticVelocity,
+  bearing,
+  canEngage,
+  groundImpactVolume,
+  segmentHit,
+  terrainIntersection,
+} from "./combat";
 import type { EnemyType, Weapon, State } from "./types";
 import "./style.css";
 
@@ -49,11 +56,23 @@ interface MuzzleSmoke {
   life: number;
   maxLife: number;
   velocity: THREE.Vector3;
+  curlAxis: THREE.Vector3;
   spin: number;
   driftPhase: number;
   driftSpeed: number;
   driftAmount: number;
   growth: number;
+  opacity: number;
+}
+interface MuzzleSmokeTrail {
+  mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
+  points: THREE.Vector3[];
+  weapon: Weapon;
+  life: number;
+  maxLife: number;
+  attachmentDuration: number;
+  driftAxis: THREE.Vector3;
+  driftPhase: number;
 }
 
 const app = document.querySelector<HTMLElement>("#app")!;
@@ -115,7 +134,7 @@ const enemyLayer = new THREE.Group(),
 scene.add(enemyLayer, projectileLayer, effectLayer, smokeLayer);
 const raycaster = new THREE.Raycaster();
 const sphereGeometry = new THREE.SphereGeometry(1, 8, 6);
-// Procedural wispy smoke sprite texture: several overlapping soft blobs so
+// Procedural smoke texture: several overlapping soft blobs so
 // each puff reads as an irregular cloud instead of a flat, hard-edged circle.
 const smokeTexture = (() => {
   const size = 128;
@@ -150,6 +169,7 @@ const enemies: Enemy[] = [],
   effects: Effect[] = [],
   tracers: Tracer[] = [],
   muzzleSmokes: MuzzleSmoke[] = [];
+let muzzleSmokeTrail: MuzzleSmokeTrail | undefined;
 const heldKeys = new Set<string>();
 let lastAutoPauseTime = 0;
 let state: State = "title",
@@ -179,10 +199,10 @@ let messageTimer = 0,
   inspectionTimer = 0;
 // Muzzle smoke state - builds up during sustained fire, dissipates when not firing
 let muzzleSmoke = 0,
-  smokeAccumulator = 0,
-  wasFiring = false;
+  smokeAccumulator = 0;
 let audioContext: AudioContext | undefined,
-  noiseBuffer: AudioBuffer | undefined;
+  noiseBuffer: AudioBuffer | undefined,
+  explosionReverbBuffer: AudioBuffer | undefined;
 const lookDirection = new THREE.Vector3(),
   targetCenter = new THREE.Vector3(),
   muzzleRight = new THREE.Vector3(),
@@ -203,6 +223,13 @@ function muzzleOrigin(forwardOffset: number) {
     .addScaledVector(muzzleRight, forwardOffset * sideAngle)
     .addScaledVector(muzzleUp, -forwardOffset * upAngle);
 }
+function muzzleOffsetForWeapon(selectedWeapon: Weapon) {
+  return selectedWeapon === "MG"
+    ? 2.8
+    : selectedWeapon === "CANNON"
+      ? 3.5
+      : 3.2;
+}
 // Stereo pan (-1..1) for a world position relative to the camera, used to
 // give hit-confirm sounds a bit of left/right positioning.
 function muzzlePan(position: THREE.Vector3) {
@@ -220,6 +247,8 @@ let spreadHeat = 0,
   spreadY = 0;
 const spreadMax = { MG: 0.1, CANNON: 0.012, ROCKET: 0.016 } as const;
 const spreadBiasMax = { MG: 0.018, CANNON: 0.004, ROCKET: 0.006 } as const;
+const PLAYER_PROJECTILE_GRAVITY = 24.5;
+const ENEMY_PROJECTILE_GRAVITY = PLAYER_PROJECTILE_GRAVITY * 0.3;
 function bloomFromHeat(heat: number) {
   const t = THREE.MathUtils.clamp(heat, 0, 1);
   // Cubic ease-in: first ~1.5s stays tight, then opens to the cap
@@ -240,6 +269,24 @@ function initializeAudio() {
     );
     const samples = noiseBuffer.getChannelData(0);
     for (let i = 0; i < samples.length; i++) samples[i] = Math.random() * 2 - 1;
+
+    const reverbDuration = 1.6;
+    explosionReverbBuffer = audioContext.createBuffer(
+      2,
+      audioContext.sampleRate * reverbDuration,
+      audioContext.sampleRate,
+    );
+    for (
+      let channel = 0;
+      channel < explosionReverbBuffer.numberOfChannels;
+      channel++
+    ) {
+      const impulse = explosionReverbBuffer.getChannelData(channel);
+      for (let i = 0; i < impulse.length; i++) {
+        const decay = Math.pow(1 - i / impulse.length, 2.4);
+        impulse[i] = (Math.random() * 2 - 1) * decay;
+      }
+    }
   }
   void audioContext.resume();
 }
@@ -339,16 +386,33 @@ function hitMarkerSound(kill: boolean, pan = 0) {
   else thup(now, 0.07, 0.24, 0.18, 200);
 }
 // Explosion: a sharp crack, a descending rumbling body, and a deep sub-bass
-// boom underneath for weight - used for enemy deaths and projectile impacts.
-function explosionSound(pan = 0, size = 1) {
-  if (!audioContext || !noiseBuffer) return;
+// boom with a short outdoor reflection tail for weight and space.
+function explosionSound(pan = 0, size = 1, volume = 1) {
+  if (!audioContext || !noiseBuffer || !explosionReverbBuffer || volume <= 0)
+    return;
   const ctx = audioContext;
   const now = ctx.currentTime;
   const clampedPan = Math.max(-1, Math.min(1, pan));
   const scale = THREE.MathUtils.clamp(size / 2.5, 0.55, 1.6);
-  const panner = ctx.createStereoPanner();
+  const panner = ctx.createStereoPanner(),
+    dryGain = ctx.createGain(),
+    reverbPreDelay = ctx.createDelay(),
+    reverb = ctx.createConvolver(),
+    reverbGain = ctx.createGain(),
+    outputGain = ctx.createGain();
   panner.pan.value = clampedPan;
-  panner.connect(ctx.destination);
+  dryGain.gain.value = 0.86;
+  reverbPreDelay.delayTime.value = 0.035;
+  reverb.buffer = explosionReverbBuffer;
+  reverbGain.gain.value = 0.38 + Math.min(0.16, size * 0.025);
+  outputGain.gain.value = Math.min(1, volume);
+  panner.connect(dryGain).connect(outputGain);
+  panner
+    .connect(reverbPreDelay)
+    .connect(reverb)
+    .connect(reverbGain)
+    .connect(outputGain);
+  outputGain.connect(ctx.destination);
 
   // Sharp initial crack - brief bright noise burst
   const crack = ctx.createBufferSource(),
@@ -407,18 +471,30 @@ function explosionSound(pan = 0, size = 1) {
   boom.onended = () => {
     boom.disconnect();
     boomGain.disconnect();
-    panner.disconnect();
   };
+  window.setTimeout(
+    () => {
+      panner.disconnect();
+      dryGain.disconnect();
+      reverbPreDelay.disconnect();
+      reverb.disconnect();
+      reverbGain.disconnect();
+      outputGain.disconnect();
+    },
+    (bodyDuration + explosionReverbBuffer.duration + 0.15) * 1000,
+  );
 }
 // Sand impact: a soft, dry, grainy "puff" of a bullet kicking up sand/dirt -
 // no tonal ring or whistle, just noise-based texture and a bit of scatter.
-function ricochetSound(pan = 0) {
-  if (!audioContext || !noiseBuffer) return;
+function ricochetSound(pan = 0, volume = 1) {
+  if (!audioContext || !noiseBuffer || volume <= 0) return;
   const ctx = audioContext;
   const now = ctx.currentTime;
-  const panner = ctx.createStereoPanner();
+  const panner = ctx.createStereoPanner(),
+    outputGain = ctx.createGain();
   panner.pan.value = Math.max(-1, Math.min(1, pan));
-  panner.connect(ctx.destination);
+  outputGain.gain.value = Math.min(1, volume);
+  panner.connect(outputGain).connect(ctx.destination);
   const layers: { node: AudioScheduledSourceNode; extras: AudioNode[] }[] = [];
 
   // Soft puff body - band-limited noise, dry and grainy rather than sharp
@@ -479,7 +555,10 @@ function ricochetSound(pan = 0) {
       node.disconnect();
       for (const extra of extras) extra.disconnect();
       remaining--;
-      if (remaining === 0) panner.disconnect();
+      if (remaining === 0) {
+        panner.disconnect();
+        outputGain.disconnect();
+      }
     };
   }
 }
@@ -600,8 +679,15 @@ function clearRun() {
     smoke.sprite.removeFromParent();
     (smoke.sprite.material as THREE.SpriteMaterial).dispose();
   }
+  if (muzzleSmokeTrail) {
+    muzzleSmokeTrail.mesh.removeFromParent();
+    muzzleSmokeTrail.mesh.geometry.dispose();
+    muzzleSmokeTrail.mesh.material.dispose();
+    muzzleSmokeTrail = undefined;
+  }
   enemies.length = shots.length = effects.length = tracers.length = muzzleSmokes.length = 0;
   trigger = zoom = false;
+  muzzleSmoke = smokeAccumulator = 0;
   heldKeys.clear();
   accumulator = 0;
   heavyAttackReady = 0;
@@ -773,7 +859,7 @@ function addEffect(
   effectLayer.add(mesh);
   effects.push({ mesh, velocity, life: duration, duration, growth });
 }
-function explode(position: THREE.Vector3, size: number) {
+function explode(position: THREE.Vector3, size: number, soundVolume = 1) {
   addEffect(position, 0xffbd55, size * 0.45, 0.28, new THREE.Vector3(), 8);
   for (let i = 0; i < 10; i++)
     addEffect(
@@ -788,7 +874,7 @@ function explode(position: THREE.Vector3, size: number) {
       ),
       i < 4 ? 0.3 : 1.2,
     );
-  explosionSound(muzzlePan(position), size);
+  explosionSound(muzzlePan(position), size, soundVolume);
 }
 function sparks(position: THREE.Vector3) {
   for (let i = 0; i < 3; i++)
@@ -839,23 +925,28 @@ function ricochetSparks(position: THREE.Vector3) {
     );
   }
 }
-function addMuzzleSmoke(position: THREE.Vector3, weapon: Weapon) {
-  const baseSize = weapon === "MG" ? 0.5 : weapon === "CANNON" ? 0.95 : 0.8;
-  // Spawn a small cluster of overlapping puffs per shot so the plume reads
-  // as a billowing, irregular cloud rather than one flat circle.
-  const puffs = weapon === "MG" ? 2 : 3;
+function addMuzzleSmoke(
+  position: THREE.Vector3,
+  weapon: Weapon,
+  residual = false,
+) {
+  const baseSize =
+    weapon === "MG" ? 0.5 : weapon === "CANNON" ? 0.95 : 0.8;
+  const puffs = residual ? 1 : weapon === "MG" ? 1 : 3;
+  const forward = new THREE.Vector3();
+  camera.getWorldDirection(forward);
   for (let p = 0; p < puffs; p++) {
-    if (muzzleSmokes.length >= 70) return;
+    if (muzzleSmokes.length >= 100) return;
     const material = new THREE.SpriteMaterial({
       map: smokeTexture,
-      color: 0xcac6bc,
+      color: 0x777872,
       transparent: true,
       opacity: 0,
       depthWrite: false,
       rotation: Math.random() * Math.PI * 2,
     });
     const sprite = new THREE.Sprite(material);
-    const jitter = 0.3;
+    const jitter = residual ? 0.12 : 0.26;
     sprite.position.copy(position).add(
       new THREE.Vector3(
         (Math.random() - 0.5) * jitter,
@@ -864,25 +955,102 @@ function addMuzzleSmoke(position: THREE.Vector3, weapon: Weapon) {
       ),
     );
     const size = baseSize * (0.65 + Math.random() * 0.7);
-    sprite.scale.setScalar(size);
+    sprite.scale.set(size, size, 1);
     smokeLayer.add(sprite);
-    const life = 1.5 + Math.random() * 1.2;
+    const life = residual
+      ? 1.7 + Math.random() * 0.7
+      : 1.2 + Math.random() * 0.8;
+    const ejectionSpeed = residual
+      ? 0.08
+      : weapon === "MG"
+        ? 0.65
+        : 1.1;
+    const curlAxis = new THREE.Vector3()
+      .setFromMatrixColumn(camera.matrixWorld, 0)
+      .normalize()
+      .applyAxisAngle(
+        new THREE.Vector3(0, 1, 0),
+        (Math.random() - 0.5) * 0.55,
+      );
     muzzleSmokes.push({
       sprite,
       life,
       maxLife: life,
-      velocity: new THREE.Vector3(
-        (Math.random() - 0.5) * 0.7,
-        1 + Math.random() * 1.4,
-        (Math.random() - 0.5) * 0.7,
-      ),
-      spin: (Math.random() - 0.5) * 1.2,
+      velocity: forward
+        .clone()
+        .multiplyScalar(ejectionSpeed)
+        .add(
+          new THREE.Vector3(
+            (Math.random() - 0.5) * 0.16,
+            0.9 + Math.random() * 0.75,
+            (Math.random() - 0.5) * 0.16,
+          ),
+        ),
+      curlAxis,
+      spin: (Math.random() - 0.5) * 0.75,
       driftPhase: Math.random() * Math.PI * 2,
-      driftSpeed: 1.2 + Math.random() * 1.6,
-      driftAmount: 0.35 + Math.random() * 0.35,
-      growth: 0.45 + Math.random() * 0.55,
+      driftSpeed: 1 + Math.random() * 1.1,
+      driftAmount: 0.18 + Math.random() * 0.24,
+      growth: 0.48 + Math.random() * 0.35,
+      opacity: residual
+        ? 0.16 + Math.random() * 0.04
+        : 0.22 + Math.random() * 0.07,
     });
   }
+}
+function startMuzzleSmokeTrail(position: THREE.Vector3, weapon: Weapon) {
+  if (muzzleSmokeTrail) return;
+  const pointCount = 9;
+  const points = Array.from({ length: pointCount }, (_, index) =>
+    position.clone().add(new THREE.Vector3(0, index * 0.008, 0)),
+  );
+  const positions = new Float32Array(pointCount * 2 * 3);
+  const uvs = new Float32Array(pointCount * 2 * 2);
+  const indices: number[] = [];
+  for (let i = 0; i < pointCount; i++) {
+    const progress = i / (pointCount - 1);
+    uvs.set([0, progress, 1, progress], i * 4);
+    if (i < pointCount - 1) {
+      const vertex = i * 2;
+      indices.push(
+        vertex,
+        vertex + 1,
+        vertex + 2,
+        vertex + 1,
+        vertex + 3,
+        vertex + 2,
+      );
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  const positionAttribute = new THREE.BufferAttribute(positions, 3);
+  positionAttribute.setUsage(THREE.DynamicDrawUsage);
+  geometry.setAttribute("position", positionAttribute);
+  geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  const material = new THREE.MeshBasicMaterial({
+    map: smokeTexture,
+    color: 0x85857f,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.frustumCulled = false;
+  smokeLayer.add(mesh);
+  muzzleSmokeTrail = {
+    mesh,
+    points,
+    weapon,
+    life: 2.1,
+    maxLife: 2.1,
+    attachmentDuration: 0.32,
+    driftAxis: new THREE.Vector3()
+      .setFromMatrixColumn(camera.matrixWorld, 0)
+      .normalize(),
+    driftPhase: Math.random() * Math.PI * 2,
+  };
 }
 function addTracer(
   start: THREE.Vector3,
@@ -897,6 +1065,52 @@ function addTracer(
   );
   effectLayer.add(line);
   tracers.push({ line, life });
+}
+function updateMuzzleSmokeTrail(dt: number) {
+  if (!muzzleSmokeTrail) return;
+  const trail = muzzleSmokeTrail;
+  trail.life -= dt;
+  trail.driftPhase += dt * 1.15;
+  const age = trail.maxLife - trail.life;
+  const cameraRight = new THREE.Vector3()
+    .setFromMatrixColumn(camera.matrixWorld, 0)
+    .normalize();
+  const positions = trail.mesh.geometry.getAttribute(
+    "position",
+  ) as THREE.BufferAttribute;
+
+  for (let i = 0; i < trail.points.length; i++) {
+    const progress = i / (trail.points.length - 1);
+    const point = trail.points[i];
+    if (i === 0 && age < trail.attachmentDuration) {
+      point.copy(muzzleOrigin(muzzleOffsetForWeapon(trail.weapon)));
+    } else {
+      point.y += (0.45 + progress * 1.1) * dt;
+      point.addScaledVector(
+        trail.driftAxis,
+        Math.sin(trail.driftPhase + progress * 2.4) *
+          (0.035 + progress * 0.12) *
+          dt,
+      );
+    }
+
+    const halfWidth = 0.035 + progress * 0.085 + age * 0.012;
+    const left = point.clone().addScaledVector(cameraRight, -halfWidth);
+    const right = point.clone().addScaledVector(cameraRight, halfWidth);
+    positions.setXYZ(i * 2, left.x, left.y, left.z);
+    positions.setXYZ(i * 2 + 1, right.x, right.y, right.z);
+  }
+  positions.needsUpdate = true;
+
+  const fadeIn = Math.min(1, age / 0.1);
+  const fadeOut = THREE.MathUtils.clamp(trail.life / 0.75, 0, 1);
+  trail.mesh.material.opacity = 0.25 * fadeIn * fadeOut;
+  if (trail.life <= 0) {
+    trail.mesh.removeFromParent();
+    trail.mesh.geometry.dispose();
+    trail.mesh.material.dispose();
+    muzzleSmokeTrail = undefined;
+  }
 }
 function obstructionDistance(
   origin: THREE.Vector3,
@@ -986,8 +1200,8 @@ function fire() {
   shake = weapon === "MG" ? 0.025 : 0.1;
   sound(weapon === "MG" ? "gun" : "heavy");
   
-  // Build up muzzle smoke during sustained fire
-  const smokeBuildup = weapon === "MG" ? 0.08 : weapon === "CANNON" ? 0.15 : 0.12;
+  const smokeBuildup =
+    weapon === "MG" ? 0.08 : weapon === "CANNON" ? 0.15 : 0.12;
   muzzleSmoke = Math.min(1, muzzleSmoke + smokeBuildup);
   
   // Heat rises steadily; actual cone uses an ease-in so bloom stays small at first
@@ -1019,11 +1233,13 @@ function fire() {
   
   // Calculate muzzle position based on weapon type (offset to match the
   // on-screen gun position rather than spawning from dead-center)
-  const muzzleOffset = weapon === "MG" ? 2.8 : weapon === "CANNON" ? 3.5 : 3.2;
+  const muzzleOffset = muzzleOffsetForWeapon(weapon);
   const origin = muzzleOrigin(muzzleOffset);
   
-  // Add visible muzzle smoke at the muzzle position (not for MG - emitted on stop-fire)
-  if (weapon !== "MG") addMuzzleSmoke(origin, weapon);
+  // Every successful shot contributes to the live plume. Residual barrel
+  // smoke continues separately as the accumulated heat dissipates.
+  addMuzzleSmoke(origin, weapon);
+  startMuzzleSmokeTrail(origin, weapon);
 
   if (weapon === "MG") {
     // Create individual visible projectile for MG instead of tracer line
@@ -1083,18 +1299,25 @@ function enemyAttack(enemy: Enemy) {
     )
   )
     return false;
-  const direction = playerPosition.clone().sub(origin).normalize();
+  const projectileSpeed = enemy.type === "infantry" ? 80 : 55;
+  const launchDirection = playerPosition.clone().sub(origin).normalize();
   const mesh = new THREE.Mesh(
     sphereGeometry,
     new THREE.MeshBasicMaterial({ color: 0xff7150 }),
   );
   mesh.scale.setScalar(enemy.type === "tank" ? 0.36 : 0.16);
-  mesh.position.copy(origin).addScaledVector(direction, 2);
+  mesh.position.copy(origin).addScaledVector(launchDirection, 2);
+  const velocity = ballisticVelocity(
+    mesh.position,
+    playerPosition,
+    projectileSpeed,
+    ENEMY_PROJECTILE_GRAVITY,
+  );
   projectileLayer.add(mesh);
   sparks(origin);
   shots.push({
     mesh,
-    velocity: direction.multiplyScalar(enemy.type === "infantry" ? 80 : 55),
+    velocity: new THREE.Vector3(velocity.x, velocity.y, velocity.z),
     damage: specs[enemy.type].attack * 3,
     splash: 0,
     life: 6,
@@ -1217,16 +1440,14 @@ function hurtPlayer(amount: number) {
   message("BUNKER HIT / −" + amount + " INTEGRITY");
 }
 function updateShots(dt: number) {
-  const gravity = 24.5; // Increased gravity for more noticeable bullet drop over distance
   for (let i = shots.length - 1; i >= 0; i--) {
     const shot = shots[i];
     shot.previous.copy(shot.mesh.position);
     // Apply bullet drop to projectiles (CANNON, ROCKET, and MG)
     if (shot.owner === "player") {
-      shot.velocity.y -= gravity * dt;
+      shot.velocity.y -= PLAYER_PROJECTILE_GRAVITY * dt;
     } else if (shot.owner === "enemy") {
-      // Enemy projectiles also experience gravity (reduced for gameplay balance)
-      shot.velocity.y -= gravity * 0.3 * dt;
+      shot.velocity.y -= ENEMY_PROJECTILE_GRAVITY * dt;
     }
     shot.mesh.position.addScaledVector(shot.velocity, dt);
     shot.life -= dt;
@@ -1332,8 +1553,26 @@ function updateShots(dt: number) {
           ricochetSparks(shot.mesh.position);
           // Only play the ground/obstruction ricochet sound when the bullet
           // didn't hit an enemy - enemy hits already get the hit-marker sound.
-          if (!enemyHit) ricochetSound(muzzlePan(shot.mesh.position));
-        } else explode(shot.mesh.position, shot.weapon === "ROCKET" ? 4.5 : 3.2);
+          if (!enemyHit) {
+            const impactDistance =
+              shot.mesh.position.distanceTo(playerPosition);
+            ricochetSound(
+              muzzlePan(shot.mesh.position),
+              groundImpactVolume(impactDistance),
+            );
+          }
+        } else {
+          const impactVolume = enemyHit
+            ? 1
+            : groundImpactVolume(
+                shot.mesh.position.distanceTo(playerPosition),
+              );
+          explode(
+            shot.mesh.position,
+            shot.weapon === "ROCKET" ? 4.5 : 3.2,
+            impactVolume,
+          );
+        }
       }
     }
     // Only add tracer for cannon/rocket projectiles, not MG bullets
@@ -1375,28 +1614,36 @@ function updateEffects(dt: number) {
       tracers.splice(i, 1);
     }
   }
-  // Update muzzle smoke particles: rise, curl sideways, spin, expand and fade
+  // Circular puffs expand evenly while buoyancy and light lateral drift keep
+  // the cloud from looking static or mechanically uniform.
   for (let i = muzzleSmokes.length - 1; i >= 0; i--) {
     const smoke = muzzleSmokes[i];
     smoke.life -= dt;
     smoke.driftPhase += smoke.driftSpeed * dt;
-    smoke.velocity.multiplyScalar(Math.exp(-dt * 0.7));
+    smoke.velocity.multiplyScalar(Math.exp(-dt * 0.48));
+    smoke.velocity.y += 0.28 * dt;
     smoke.sprite.position.addScaledVector(smoke.velocity, dt);
-    smoke.sprite.position.x += Math.sin(smoke.driftPhase) * smoke.driftAmount * dt;
-    smoke.sprite.position.z += Math.cos(smoke.driftPhase * 0.7) * smoke.driftAmount * dt;
-    smoke.sprite.scale.addScalar(smoke.growth * dt);
+    smoke.sprite.position.addScaledVector(
+      smoke.curlAxis,
+      Math.sin(smoke.driftPhase) * smoke.driftAmount * dt,
+    );
+    smoke.sprite.scale.x += smoke.growth * dt;
+    smoke.sprite.scale.y += smoke.growth * dt;
     const material = smoke.sprite.material as THREE.SpriteMaterial;
     material.rotation += smoke.spin * dt;
     const lifeRatio = Math.max(0, smoke.life / smoke.maxLife);
-    // Quick fade-in so the puff doesn't pop, then a soft fade-out as it dissipates
-    const fadeIn = Math.min(1, (smoke.maxLife - smoke.life) / 0.2);
-    material.opacity = Math.min(fadeIn, lifeRatio * lifeRatio + lifeRatio * 0.3) * 0.55;
+    const age = smoke.maxLife - smoke.life;
+    const fadeIn = Math.min(1, age / 0.12);
+    const fadeOut = Math.pow(lifeRatio, 1.4);
+    const turbulence = 0.88 + Math.sin(smoke.driftPhase * 1.7) * 0.12;
+    material.opacity = smoke.opacity * fadeIn * fadeOut * turbulence;
     if (smoke.life <= 0) {
       smoke.sprite.removeFromParent();
       material.dispose();
       muzzleSmokes.splice(i, 1);
     }
   }
+  updateMuzzleSmokeTrail(dt);
 }
 function beginWave() {
   state = "combat";
@@ -1454,15 +1701,19 @@ function update(dt: number) {
   spreadY = THREE.MathUtils.lerp(spreadY, 0, Math.min(1, spreadRecovery * dt));
   applyBloomSpread();
   
-  // Muzzle smoke: emit burst on MG stop-fire, then dissipate
-  if (wasFiring && !trigger && weapon === "MG" && muzzleSmoke > 0.05) {
-    const smokeOrigin = muzzleOrigin(2.8);
-    const count = Math.floor(muzzleSmoke * 5) + 1;
-    for (let i = 0; i < count; i++) addMuzzleSmoke(smokeOrigin, "MG");
+  // A hot MG barrel releases sparse smoke after firing instead of one
+  // artificial stop-fire burst. Active-fire smoke is emitted in fire().
+  if (!trigger && weapon === "MG" && muzzleSmoke > 0.05) {
+    smokeAccumulator += dt * (1.2 + muzzleSmoke * 3.8);
+    while (smokeAccumulator >= 1) {
+      addMuzzleSmoke(muzzleOrigin(muzzleOffsetForWeapon("MG")), "MG", true);
+      smokeAccumulator--;
+    }
+  } else if (trigger || muzzleSmoke <= 0.05) {
+    smokeAccumulator = 0;
   }
-  wasFiring = trigger;
   if (!trigger) {
-    muzzleSmoke = Math.max(0, muzzleSmoke - dt * 0.8);
+    muzzleSmoke = Math.max(0, muzzleSmoke - dt * 0.34);
   }
   
   if (reload > 0) {
