@@ -151,6 +151,7 @@ const enemies: Enemy[] = [],
   tracers: Tracer[] = [],
   muzzleSmokes: MuzzleSmoke[] = [];
 const heldKeys = new Set<string>();
+let lastAutoPauseTime = 0;
 let state: State = "title",
   pausedState: State = "combat";
 let playerHp = 1000,
@@ -608,13 +609,44 @@ function clearRun() {
   window.clearTimeout(messageTimer);
   document.querySelector("#message")!.classList.remove("show");
 }
+let awaitingPointerLockClick = false;
+function armPointerLockRetry() {
+  // Browsers refuse to re-grant pointer lock from a keyboard-triggered
+  // gesture (e.g. pressing Escape again) right after the lock was exited
+  // via Escape. Fall back to arming a one-shot click to regain the lock,
+  // and suppress the weapon firing on that reclaiming click.
+  if (awaitingPointerLockClick) return;
+  awaitingPointerLockClick = true;
+  renderer.domElement.addEventListener(
+    "mousedown",
+    () => {
+      awaitingPointerLockClick = false;
+      if (active() && !controls.isLocked) capturePointer();
+    },
+    { once: true },
+  );
+}
 function capturePointer() {
   // The Three.js version in this project discards the request's promise.
   // Handle browsers that deny capture and retain drag/keyboard aiming.
   const request = renderer.domElement.requestPointerLock() as
     | Promise<void>
     | undefined;
-  request?.catch(() => message("DRAG TO AIM · ARROW KEYS ALSO AVAILABLE"));
+  if (request?.catch) {
+    request.catch(() => {
+      message("CLICK TO AIM · ARROW KEYS ALSO AVAILABLE");
+      armPointerLockRetry();
+    });
+  } else {
+    // Some browsers neither return a promise nor reject synchronously;
+    // verify shortly after whether the lock was actually granted.
+    window.setTimeout(() => {
+      if (active() && !controls.isLocked) {
+        message("CLICK TO AIM · ARROW KEYS ALSO AVAILABLE");
+        armPointerLockRetry();
+      }
+    }, 60);
+  }
 }
 function reset() {
   clearRun();
@@ -1620,11 +1652,15 @@ document
     ),
   );
 controls.addEventListener("unlock", () => {
-  if (active()) pause();
+  if (active()) {
+    lastAutoPauseTime = performance.now();
+    pause();
+  }
 });
-document.addEventListener("pointerlockerror", () =>
-  message("DRAG TO AIM · ARROW KEYS ALSO AVAILABLE"),
-);
+document.addEventListener("pointerlockerror", () => {
+  message("CLICK TO AIM · ARROW KEYS ALSO AVAILABLE");
+  armPointerLockRetry();
+});
 window.addEventListener("blur", pause);
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) pause();
@@ -1632,7 +1668,12 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     if (state === "paused") {
-      resume();
+      // Pressing Escape while the pointer is locked makes the browser force
+      // an unlock (and our "unlock" listener already paused the game) just
+      // before this same keydown reaches us. Ignore that echo so we don't
+      // immediately try to re-lock the pointer, which browsers block right
+      // after an Escape-triggered unlock (leaving mouse-look broken).
+      if (performance.now() - lastAutoPauseTime > 250) resume();
     } else {
       pause();
     }
@@ -1649,8 +1690,13 @@ window.addEventListener("keydown", (event) => {
   }
   if (event.key.toLowerCase() === "r") reloadWeapon();
   if (event.code === "Space") {
-    trigger = true;
-    fire();
+    event.preventDefault();
+    if (state === "intermission") {
+      beginWave();
+    } else {
+      trigger = true;
+      fire();
+    }
   }
   if (event.key === "Shift") {
     event.preventDefault();
@@ -1668,6 +1714,7 @@ window.addEventListener("keyup", (event) => {
 });
 renderer.domElement.addEventListener("mousedown", (event) => {
   if (state !== "combat") return;
+  if (awaitingPointerLockClick) return;
   if (event.button === 0) {
     trigger = true;
     fire();

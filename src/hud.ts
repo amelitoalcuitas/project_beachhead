@@ -235,7 +235,7 @@ export class CombatHud {
     this.text(
       "objectiveDetail",
       s.state === "intermission"
-        ? `Next assault in ${Math.ceil(s.intermission)}s · repairs + supplies`
+        ? `Next assault in ${Math.ceil(s.intermission)}s · repairs + supplies · press SPACE to start now`
         : s.contacts.some((c) => c.inRange)
           ? "Enemies in firing range. Prioritize nearby threats."
           : "Red pins mark incoming contacts. Scan all bearings.",
