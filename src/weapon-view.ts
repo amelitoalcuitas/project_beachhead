@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import type { Weapon } from "./types";
 
 export class WeaponView {
   readonly scene = new THREE.Scene();
@@ -158,9 +159,15 @@ export class WeaponView {
     this.swap = 0.4;
     this.models.forEach((model, key) => (model.visible = key === name));
   }
-  fire() {
-    this.recoil = this.current === "MG" ? 0.06 : 0.22;
-    this.flashTime = 0.065;
+  fire(weapon: Weapon) {
+    this.recoil = weapon === "MG" ? 0.06 : weapon === "CANNON" ? 0.25 : 0.22;
+    this.flashTime = weapon === "MG" ? 0.04 : weapon === "CANNON" ? 0.12 : 0.1;
+    // Adjust flash size based on weapon
+    const flashScale = weapon === "MG" ? 0.6 : weapon === "CANNON" ? 1.8 : 1.4;
+    this.flash.scale.setScalar(flashScale);
+    // Vary flash color by weapon type
+    const flashColor = weapon === "MG" ? 0xffd077 : weapon === "CANNON" ? 0xffaa55 : 0xff8844;
+    (this.flash.material as THREE.MeshBasicMaterial).color.setHex(flashColor);
   }
   update(dt: number, time: number, reloading: boolean, zoom: boolean) {
     this.recoil *= Math.exp(-dt * 18);
