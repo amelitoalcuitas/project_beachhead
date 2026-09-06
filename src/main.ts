@@ -132,6 +132,9 @@ let activePlan = [...wavePlans[0]],
 let messageTimer = 0,
   bannerTimer = 0,
   inspectionTimer = 0;
+// Muzzle smoke state - builds up during sustained fire, dissipates when not firing
+let muzzleSmoke = 0,
+  smokeAccumulator = 0;
 let audioContext: AudioContext | undefined,
   noiseBuffer: AudioBuffer | undefined;
 const lookDirection = new THREE.Vector3(),
@@ -494,9 +497,13 @@ function fire() {
   }
   definition.mag--;
   cooldown = 1 / definition.fireRate;
-  weaponView.fire();
+  weaponView.fire(weapon);
   shake = weapon === "MG" ? 0.025 : 0.1;
   sound(weapon === "MG" ? "gun" : "heavy");
+  
+  // Build up muzzle smoke during sustained fire
+  const smokeBuildup = weapon === "MG" ? 0.08 : weapon === "CANNON" ? 0.15 : 0.12;
+  muzzleSmoke = Math.min(1, muzzleSmoke + smokeBuildup);
   
   // Increase spread during sustained fire - more for MG, less for heavy weapons
   const spreadBuildup = weapon === "MG" ? 0.0035 : weapon === "CANNON" ? 0.0012 : 0.0018;
@@ -517,7 +524,9 @@ function fire() {
   aimDirection.applyAxisAngle(new THREE.Vector3(0, 1, 0), randomYaw);
   aimDirection.normalize();
   
-  const origin = playerPosition.clone();
+  // Calculate muzzle position based on weapon type
+  const muzzleOffset = weapon === "MG" ? 2.8 : weapon === "CANNON" ? 3.5 : 3.2;
+  const origin = playerPosition.clone().addScaledVector(lookDirection, muzzleOffset);
   if (weapon === "MG") {
     // Create individual visible projectile for MG instead of tracer line
     const mesh = new THREE.Mesh(
@@ -784,7 +793,7 @@ function updateShots(dt: number) {
                 shot.mesh.position,
               );
           }
-        explode(shot.mesh.position, shot.weapon === "ROCKET" ? 3 : 1.5);
+        explode(shot.mesh.position, shot.weapon === "ROCKET" ? 4.5 : shot.weapon === "CANNON" ? 3.2 : 1.5);
       }
     }
     // Only add tracer for cannon/rocket projectiles, not MG bullets
@@ -875,6 +884,11 @@ function update(dt: number) {
   spreadAngle = THREE.MathUtils.lerp(spreadAngle, 0, Math.min(1, spreadRecovery * dt));
   spreadX = THREE.MathUtils.lerp(spreadX, 0, Math.min(1, spreadRecovery * dt));
   spreadY = THREE.MathUtils.lerp(spreadY, 0, Math.min(1, spreadRecovery * dt));
+  
+  // Muzzle smoke dissipation when not firing
+  if (!trigger) {
+    muzzleSmoke = Math.max(0, muzzleSmoke - dt * 0.8);
+  }
   
   if (reload > 0) {
     reload -= dt;
