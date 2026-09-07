@@ -94,7 +94,7 @@ export const weaponEffectiveness: Record<Weapon, Record<EnemyType, number>> = {
   BOFORS: {
     infantry: 0.6, armoredInfantry: 0.6, grenadierInfantry: 0.6,
     jeep: 0.9, truck: 0.8, apc: 0.4, tank: 0.1,
-    heli: 1.5, aircraft: 1.5,
+    heli: 3.0, aircraft: 3.0,
   },
 };
 
@@ -398,6 +398,7 @@ export const specs: Record<
     speed: number;
     attack: number;
     attackRate: number;
+    burst?: { count: number; interval: number };
     range: number;
     bulletDrop: number;
     projectileSpeed: number;
@@ -411,10 +412,11 @@ export const specs: Record<
 > = {
   infantry: {
     name: "WEHRMACHT RIFLEMAN",
-    hp: 100,
+    hp: 70,
     speed: 7.7,
     attack: 5,
-    attackRate: 0.2,
+    attackRate: 0.5,
+    burst: { count: 3, interval: 0.12 },
     range: 90,
     bulletDrop: 3.675,
     projectileSpeed: 80,
@@ -425,10 +427,10 @@ export const specs: Record<
   },
   armoredInfantry: {
     name: "PANZERGRENADIER",
-    hp: 150,
+    hp: 120,
     speed: 6.6,
     attack: 5,
-    attackRate: 0.2,
+    attackRate: 0.4,
     range: 65,
     bulletDrop: 3.675,
     projectileSpeed: 80,
@@ -439,10 +441,10 @@ export const specs: Record<
   },
   grenadierInfantry: {
     name: "GERMAN GRENADIER",
-    hp: 100,
+    hp: 70,
     speed: 6.6,
     attack: 25,
-    attackRate: 0.125,
+    attackRate: 0.143,
     range: 85,
     bulletDrop: 12,
     projectileSpeed: 50,
@@ -499,7 +501,7 @@ export const specs: Record<
     hp: 1200,
     speed: 3.3,
     attack: 11,
-    attackRate: 0.2,
+    attackRate: 0.4,
     range: 170,
     bulletDrop: 3.675,
     projectileSpeed: 55,

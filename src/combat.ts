@@ -208,3 +208,36 @@ export function projectileImpact(physicalT: number, proximityT: number) {
     return { t: proximityT, kind: "proximity" as const };
   return null;
 }
+
+export interface EnemyFireState {
+  fire: number;
+  burstRemaining: number;
+}
+
+// Schedule one projectile per update so delayed frames cannot collapse a burst.
+export function advanceEnemyFire(
+  state: EnemyFireState,
+  dt: number,
+  burst: { count: number; interval: number } | undefined,
+  cooldown: number,
+) {
+  const fire = state.fire - dt;
+  if (fire > 1e-6) return { fire, burstRemaining: state.burstRemaining, shouldFire: false };
+  const burstRemaining = (state.burstRemaining || burst?.count || 1) - 1;
+  return {
+    fire: burstRemaining > 0 ? burst!.interval : cooldown,
+    burstRemaining,
+    shouldFire: true,
+  };
+}
+
+export function enemyProjectileDamage(definition: {
+  attack: number;
+  grenade?: boolean;
+  explosionDamage: number;
+  burst?: { count: number };
+}) {
+  return definition.grenade
+    ? definition.explosionDamage
+    : definition.attack * 3 / (definition.burst?.count ?? 1);
+}

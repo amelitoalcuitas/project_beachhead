@@ -210,3 +210,33 @@ test("AT ADS stays elevated while Bofors ADS aligns through its ring sight", () 
     assert.ok(view.muzzleScreenPosition().y < 0);
   }
 });
+
+
+test("muzzle flashes extend forward from each barrel opening through recoil and ADS", () => {
+  const openings = { MG: -2.981, CANNON: -4.058, BOFORS: -3.809 };
+  for (const weapon of Object.keys(openings)) {
+    for (const zoom of [false, true]) {
+      const view = new WeaponView();
+      view.select(weapon);
+      view.update(1, 1, false, zoom, 4, 0);
+      view.fire(weapon);
+      for (const time of [0.01, 0.02, 0.03]) {
+        view.update(0.01, time, false, zoom, 3, 0);
+        view.scene.updateMatrixWorld(true);
+        const flash = part(view, "weapon-muzzle-flash");
+        const recoil = weapon === "MG" ? part(view, "mg-barrel-assembly").position.z
+          : weapon === "CANNON" ? part(view, "at-recoiling-assembly").position.z
+          : 0.12 * Math.exp(-time * 18);
+        assert.ok(Math.abs(flash.position.z - openings[weapon] - recoil) < 1e-7);
+        const vertices = flash.geometry.attributes.position;
+        let nearest = -Infinity;
+        for (let i = 0; i < vertices.count; i++) {
+          const vertex = new THREE.Vector3().fromBufferAttribute(vertices, i).applyMatrix4(flash.matrix);
+          assert.ok(vertex.z <= flash.position.z + 1e-7, "Flame never extends behind the muzzle");
+          nearest = Math.max(nearest, vertex.z);
+        }
+        assert.ok(Math.abs(nearest - flash.position.z) < 1e-7);
+      }
+    }
+  }
+});

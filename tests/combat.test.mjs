@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  advanceEnemyFire,
+  enemyProjectileDamage,
   resolveWeaponDamage,
   splashDamage,
   proximityHit,
@@ -166,11 +168,11 @@ test("vehicle projectiles compensate for gravity at their stopping distances", (
 });
 
 test("infantry variants and ground speed balance are defined", () => {
-  assert.equal(specs.infantry.hp, 100);
+  assert.equal(specs.infantry.hp, 70);
   assert.equal(specs.infantry.speed, 7.7);
   assert.equal(specs.infantry.range, 90);
-  assert.equal(specs.armoredInfantry.hp, 150);
-  assert.equal(specs.grenadierInfantry.hp, 100);
+  assert.equal(specs.armoredInfantry.hp, 120);
+  assert.equal(specs.grenadierInfantry.hp, 70);
   assert.equal(specs.grenadierInfantry.range, 85);
   assert.equal(specs.grenadierInfantry.grenade, true);
   assert.equal(specs.grenadierInfantry.color, 0x315fa8);
@@ -204,7 +206,7 @@ const matchupDamage = {
   infantry: [30, 200, 96], armoredInfantry: [24, 260, 96],
   grenadierInfantry: [30, 200, 96], jeep: [6, 400, 144],
   truck: [4.5, 400, 128], apc: [1.2, 500, 64],
-  tank: [0.45, 600, 16], heli: [9, 180, 240], aircraft: [9, 180, 240],
+  tank: [0.45, 600, 16], heli: [9, 180, 480], aircraft: [9, 180, 480],
 };
 for (const [enemy, expected] of Object.entries(matchupDamage)) {
   ["MG", "CANNON", "BOFORS"].forEach((weapon, index) => {
@@ -278,4 +280,42 @@ test("impact ordering chooses a single earliest detonation and physical hits win
   assert.deepEqual(projectileImpact(0.2, 0.2), { t: 0.2, kind: "physical" });
   assert.deepEqual(projectileImpact(Infinity, 0.2), { t: 0.2, kind: "proximity" });
   assert.equal(projectileImpact(Infinity, Infinity), null);
+});
+
+
+test("riflemen fire three spaced weak bullets before the normal cooldown", () => {
+  const definition = specs.infantry;
+  let state = { fire: 0, burstRemaining: 0 };
+  const shotTimes = [];
+  for (let frame = 0; frame <= 50; frame++) {
+    const next = advanceEnemyFire(state, frame === 0 ? 0 : 0.01, definition.burst, 3);
+    if (next.shouldFire) shotTimes.push(frame / 100);
+    state = next;
+  }
+  assert.deepEqual(shotTimes, [0, 0.12, 0.24]);
+  assert.equal(state.burstRemaining, 0);
+  assert.equal(enemyProjectileDamage(definition), 5);
+  assert.equal(shotTimes.length * enemyProjectileDamage(definition), 15);
+  const nextBurst = advanceEnemyFire(state, 3, definition.burst, 3);
+  assert.equal(nextBurst.shouldFire, true);
+  assert.equal(nextBurst.burstRemaining, 2);
+});
+
+test("burst timing pauses and delayed frames do not emit all remaining bullets", () => {
+  const state = { fire: 0.12, burstRemaining: 2 };
+  const paused = advanceEnemyFire(state, 0, specs.infantry.burst, 3);
+  assert.equal(paused.shouldFire, false);
+  assert.equal(paused.fire, 0.12);
+  const delayed = advanceEnemyFire(state, 1, specs.infantry.burst, 3);
+  assert.equal(delayed.shouldFire, true);
+  assert.equal(delayed.burstRemaining, 1);
+  assert.equal(delayed.fire, 0.12);
+});
+
+test("other enemies retain single-shot damage and grenade damage", () => {
+  for (const [type, definition] of Object.entries(specs)) {
+    if (type === "infantry") continue;
+    assert.equal(definition.burst, undefined);
+    assert.equal(enemyProjectileDamage(definition), definition.grenade ? definition.explosionDamage : definition.attack * 3);
+  }
 });

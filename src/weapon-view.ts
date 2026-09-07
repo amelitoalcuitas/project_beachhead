@@ -40,9 +40,9 @@ export class WeaponView {
     BOFORS: new THREE.Vector3(-0.22, -0.1, -1.6),
   };
   private readonly muzzlePositions: Record<Weapon, THREE.Vector3> = {
-    MG: new THREE.Vector3(0.12, -0.48, -2.975),
-    CANNON: new THREE.Vector3(0.12, -0.32, -4.05),
-    BOFORS: new THREE.Vector3(0.12, -0.32, -3.8),
+    MG: new THREE.Vector3(0.12, -0.48, -2.981),
+    CANNON: new THREE.Vector3(0.12, -0.32, -4.058),
+    BOFORS: new THREE.Vector3(0.12, -0.32, -3.809),
   };
 
   constructor() {
@@ -387,8 +387,12 @@ export class WeaponView {
       this.mount.add(model);
       this.models.set(name, model);
     }
+    // Anchor the base at the opening; spin around the bore without tilting the flame.
+    const flashGeometry = new THREE.ConeGeometry(0.17, 0.6, 6);
+    flashGeometry.translate(0, 0.3, 0);
+    flashGeometry.rotateX(-Math.PI / 2);
     this.flash = new THREE.Mesh(
-      new THREE.ConeGeometry(0.17, 0.6, 6),
+      flashGeometry,
       new THREE.MeshBasicMaterial({
         color: 0xffd077,
         transparent: true,
@@ -397,8 +401,8 @@ export class WeaponView {
         depthWrite: false,
       }),
     );
-    this.flash.rotation.x = -Math.PI / 2;
-    this.flash.position.set(0.12, -0.32, -3.3);
+    this.flash.name = "weapon-muzzle-flash";
+    this.flash.position.copy(this.muzzlePositions.MG);
     this.flash.visible = false;
     this.mount.add(this.flash);
   }
@@ -426,7 +430,7 @@ export class WeaponView {
     }
     this.recoil = weapon === "MG" ? 0.06 : weapon === "CANNON" ? 0.25 : 0.12;
     this.flashTime = weapon === "MG" ? 0.04 : weapon === "CANNON" ? 0.12 : 0.065;
-    const flashScale = weapon === "MG" ? 0.55 : weapon === "CANNON" ? 1.9 : 1.1;
+    const flashScale = weapon === "MG" ? 1.0 : weapon === "CANNON" ? 1.9 : 1.1;
     this.flash.scale.setScalar(flashScale);
     const flashColor =
       weapon === "MG" ? 0xffe8a0 : weapon === "CANNON" ? 0xd4c8a0 : 0xffe9a0;
@@ -475,7 +479,7 @@ export class WeaponView {
     if (isCannon) this.flash.position.z += this.cannonRecoiling.position.z;
     if (this.current === "MG") this.flash.position.z += this.mgBarrelGroup.position.z;
     this.flash.visible = this.flashTime > 0;
-    this.flash.rotation.y = time * 40;
+    this.flash.rotation.z = time * 40;
   }
   private updateMG(dt: number, reloading: boolean, magazine: number, reloadProgress: number, reloadMagazine: number) {
     this.mgShotTime += dt;

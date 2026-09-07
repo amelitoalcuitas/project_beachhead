@@ -8,6 +8,8 @@ import {
 } from "./content";
 import { enemyModel, animateEnemy } from "./enemy-models";
 import {
+  advanceEnemyFire,
+  enemyProjectileDamage,
   resolveWeaponDamage,
   splashDamage,
   proximityHit,
@@ -29,6 +31,7 @@ interface Enemy {
   hp: number;
   speed: number;
   fire: number;
+  burstRemaining: number;
   dead: boolean;
   target: THREE.Vector3;
   passes: number;
@@ -324,6 +327,7 @@ let spreadHeat = 0,
   spreadX = 0,
   spreadY = 0;
 const spreadBiasMax = { MG: 0.018, CANNON: 0.004, BOFORS: 0.006 } as const;
+const MG_ADS_SPREAD_MULTIPLIER = 0.2;
 // Use standard Earth gravity for every player-fired weapon so drop is
 // physically consistent across the machine gun, cannon, and Bofors cannon.
 const PLAYER_PROJECTILE_GRAVITY = 9.81;
@@ -334,7 +338,10 @@ function bloomFromHeat(heat: number) {
   return t * t * t;
 }
 function applyBloomSpread() {
-  spreadAngle = bloomFromHeat(spreadHeat) * weapons[weapon].spread;
+  const baseSpread = bloomFromHeat(spreadHeat) * weapons[weapon].spread;
+  spreadAngle = zoom && weapon === "MG"
+    ? baseSpread * MG_ADS_SPREAD_MULTIPLIER
+    : baseSpread;
 }
 const active = () => state === "combat" || state === "intermission";
 
@@ -1207,6 +1214,7 @@ function spawn(type: EnemyType, near?: THREE.Vector3, parachuting = false) {
     hp: definition.hp,
     speed: definition.speed * Math.min(1.65, 1 + wave * 0.025),
     fire: 1 / definition.attackRate + Math.random() * 2.5,
+    burstRemaining: 0,
     dead: false,
     target: playerPosition.clone(),
     passes: 0,
@@ -2046,6 +2054,10 @@ function fire() {
     const curveFactor = 0.96;
     heatPerShot *= (1 + spreadHeat * curveFactor);
   }
+  // Reduce heat per shot when zoomed for MG to minimize crosshair oscillation
+  if (zoom && weapon === "MG") {
+    heatPerShot *= 0.7;
+  }
   spreadHeat = Math.min(1, spreadHeat + heatPerShot);
   applyBloomSpread();
   const bloom = bloomFromHeat(spreadHeat);
@@ -2176,7 +2188,7 @@ function enemyAttack(enemy: Enemy) {
   shots.push({
     mesh,
     velocity: new THREE.Vector3(velocity.x, velocity.y, velocity.z),
-    damage: grenade ? definition.explosionDamage : definition.attack * 3,
+    damage: enemyProjectileDamage(definition),
     explosionDamage: definition.explosionDamage,
     splash: grenade ? definition.explosionRadius : 0,
     life: grenade ? 8 : 6,
@@ -2287,6 +2299,7 @@ function updateEnemies(dt: number) {
     }
     if (!enemy.canAttack) {
       enemy.warning = 0;
+      enemy.burstRemaining = 0;
       enemy.fire = Math.max(enemy.fire, 0.5);
       continue;
     }
@@ -2295,6 +2308,16 @@ function updateEnemies(dt: number) {
       if (enemy.warning <= 0) {
         enemyAttack(enemy);
         enemy.fire = 1 / specs[enemy.type].attackRate + Math.random() * 2;
+      }
+      continue;
+    }
+    if (definition.burst) {
+      const next = advanceEnemyFire(enemy, dt, definition.burst, 1 / definition.attackRate + Math.random() * 2);
+      enemy.fire = next.fire;
+      enemy.burstRemaining = next.burstRemaining;
+      if (next.shouldFire && !enemyAttack(enemy)) {
+        enemy.burstRemaining = 0;
+        enemy.fire = 1 / definition.attackRate + Math.random() * 2;
       }
       continue;
     }
@@ -2792,7 +2815,7 @@ function pause() {
   overlay.innerHTML =
     '<div class="card"><div class="eyebrow">EMPLACEMENT / STANDBY</div><h1>HOLD<span>POSITION</span></h1><div class="title-rule"></div><p>Combat is paused.</p><button class="button" id="resume">RESUME DEFENSE →</button><button class="button secondary" id="restart">RESTART MISSION</button>' +
     devToolsMarkup() +
-    '<div class="hint">Mouse: aim · Left click: fire · Right click: zoom<br>1–3 or mouse wheel: weapons · R: reload<br>Arrow keys also aim. If the pointer is not captured, drag to aim.</div></div>';
+    '<div class="hint">Mouse: aim · Left click: fire · Right click: zoom<br>1–3: weapons · R: reload<br>Arrow keys also aim. If the pointer is not captured, drag to aim.</div></div>';
   overlay.style.display = "flex";
   installDevTools();
   document.querySelector("#resume")!.addEventListener("click", resume);
@@ -3007,10 +3030,4 @@ window.addEventListener("resize", () => {
 });
 requestAnimationFrame(animate);
 
-renderer.domElement.addEventListener("wheel", (event) => {
-  if (!active()) return;
-  event.preventDefault();
-  const loadout = Object.keys(weapons) as Weapon[];
-  const nextIndex = (loadout.indexOf(weapon) + (event.deltaY > 0 ? 1 : -1) + loadout.length) % loadout.length;
-  selectWeapon(loadout[nextIndex]);
-}, { passive: false });
+
