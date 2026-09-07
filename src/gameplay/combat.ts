@@ -1,5 +1,5 @@
-import { splashEffectiveness, weaponEffectiveness } from "./content.ts";
-import { isInfantryType, type EnemyType, type Weapon } from "./types.ts";
+import { splashEffectiveness, weaponEffectiveness } from "../content.ts";
+import { isInfantryType, type EnemyType, type Weapon } from "../types.ts";
 
 export interface Position {
   x: number;

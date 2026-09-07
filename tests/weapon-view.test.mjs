@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as THREE from "three";
-import { WeaponView } from "../src/weapon-view.ts";
+import { WeaponView } from "../src/rendering/weapon-view.ts";
 
 // WeaponView only needs viewport dimensions; geometry checks need no WebGL context.
 globalThis.innerWidth = 1280;

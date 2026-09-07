@@ -67,6 +67,35 @@ Enemies must be within their type's firing range and have an unobstructed view o
 
 ## Development and verification
 
-`npm test` runs regression checks for compass bearings, north wraparound, firing distances, occlusion gating, swept projectile collision, all 27 weapon matchups, splash resistance, and proximity-fuse arming and impact ordering, and weapon animation/ADS regressions, including MG idle transforms, rapid fire, and partial reloads. The test command uses Node's TypeScript support and requires Node 22.18+ or Node 24+.
+`npm test` runs regression checks for compass bearings, north wraparound, firing distances, occlusion gating, swept projectile collision, all 27 weapon matchups, splash resistance, proximity-fuse arming and impact ordering, weapon animation/ADS regressions, and session lifecycle helpers (`game-state.test.mjs`). The test command uses Node's TypeScript support and requires Node 22.18+ or Node 24+.
 
-The presentation is split into the battlefield, first-person weapon view, enemy models, and HUD modules. The main loop owns combat state and sends snapshots to the HUD. Content definitions are shared by gameplay and tests.
+### Source layout
+
+```
+src/
+  main.ts              — bootstraps the Game and loads styles
+  game/
+    game.ts            — composes systems, update/render loop (~570 lines)
+    game-state.ts      — session state factory and lifecycle predicates
+    waves.ts           — wave plans, spawning cadence, intermission transitions
+  gameplay/
+    combat.ts          — pure combat math (damage, ballistics, radar helpers)
+    entities.ts        — shared entity interfaces (Enemy, Shot, Effect, …)
+    enemies.ts         — EnemySystem: spawn, AI, line-of-sight, hit resolution
+    projectiles.ts     — ProjectileSystem: shots[], updateShots(), gravity constants
+    weapons.ts         — WeaponSystem + spread/bloom helpers
+  rendering/
+    battlefield.ts     — terrain, scenery, water
+    enemy-models.ts    — procedural enemy meshes
+    weapon-view.ts     — first-person weapon models
+    effects.ts         — EffectsSystem: particles, tracers, wreckage, muzzle flash
+  audio/audio.ts       — procedural Web Audio manager
+  input/controls.ts    — keyboard, pointer lock, and resize bindings
+  ui/
+    hud.ts             — CombatHud DOM updates
+    screens.ts         — screenMarkup + ScreenMessages (banner, pause, end)
+    dev-tools.ts       — developer tuning panel markup
+  content.ts, types.ts, style.css
+```
+
+`main.ts` only initializes the app. `Game` constructs `EffectsSystem`, `EnemySystem`, `ProjectileSystem`, `WeaponSystem`, and `ScreenMessages`, wires narrow callback deps in its constructor, and delegates domain updates from its loop. Content definitions remain shared by gameplay and tests.

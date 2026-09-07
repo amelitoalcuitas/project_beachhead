@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { Weapon } from "./types";
+import type { Weapon } from "../types.ts";
 
 export class WeaponView {
   readonly scene = new THREE.Scene();

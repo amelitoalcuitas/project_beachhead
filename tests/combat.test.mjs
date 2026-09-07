@@ -20,7 +20,7 @@ import {
   grenadeDamageAtDistance,
   segmentHit,
   terrainIntersection,
-} from "../src/combat.ts";
+} from "../src/gameplay/combat.ts";
 import { specs, weapons, weaponEffectiveness, splashEffectiveness } from "../src/content.ts";
 import { wavePlans } from "../src/content.ts";
 

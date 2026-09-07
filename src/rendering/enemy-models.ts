@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { isInfantryType, type EnemyType } from "./types";
+import { isInfantryType, type EnemyType } from "../types.ts";
 
 const materials = new Map<number, THREE.MeshStandardMaterial>();
 function material(color: number) {
