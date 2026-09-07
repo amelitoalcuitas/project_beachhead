@@ -1,3 +1,6 @@
+import { weaponEffectiveness } from "./content.ts";
+import { isInfantryType, type EnemyType, type Weapon } from "./types.ts";
+
 export interface Position {
   x: number;
   y: number;
@@ -32,6 +35,13 @@ export function distanceBetween(a: Position, b: Position) {
 
 export const GROUND_IMPACT_FULL_VOLUME_DISTANCE = 20;
 export const GROUND_IMPACT_AUDIBLE_DISTANCE = 350;
+export const GRENADE_DAMAGE = 75;
+export const GRENADE_BLAST_RADIUS = 8;
+
+export function grenadeDamageAtDistance(distance: number) {
+  if (distance < 0 || distance > GRENADE_BLAST_RADIUS) return 0;
+  return GRENADE_DAMAGE * (1 - distance / GRENADE_BLAST_RADIUS);
+}
 
 export function groundImpactVolume(distance: number) {
   if (distance <= GROUND_IMPACT_FULL_VOLUME_DISTANCE) return 1;
@@ -139,4 +149,62 @@ export function segmentHit(
   if (discriminant < 0) return null;
   const t = (-b - Math.sqrt(discriminant)) / lengthSquared;
   return t >= 0 && t <= 1 ? t : null;
+}
+
+const HEADSHOT_MULTIPLIER = 2.5;
+const MG_HEADSHOT_DAMAGE = 100;
+const SPLASH_DAMAGE_SCALE = 0.65;
+
+export function resolveWeaponDamage(
+  amount: number,
+  weapon: Weapon,
+  target: EnemyType,
+  headshot = false,
+) {
+  const critical = headshot && isInfantryType(target);
+  const damage = critical ? (weapon === "MG" ? MG_HEADSHOT_DAMAGE : amount * HEADSHOT_MULTIPLIER) : amount;
+  return damage * weaponEffectiveness[weapon][target];
+}
+
+export function splashDamage(
+  amount: number,
+  radius: number,
+  distance: number,
+  clearSight: boolean,
+  directlyHit = false,
+) {
+  if (directlyHit || !clearSight || radius <= 0 || distance < 0 || distance >= radius) return 0;
+  return amount * SPLASH_DAMAGE_SCALE * (1 - distance / radius);
+}
+
+// Clip the swept segment at the arming distance; a fast round can arm mid-step.
+export function proximityHit(
+  start: Position,
+  end: Position,
+  center: Position,
+  distanceTravelled: number,
+  armingDistance: number,
+  radius: number,
+  isAir: boolean,
+  isDead = false,
+): number | null {
+  if (!isAir || isDead || radius <= 0) return null;
+  const length = distanceBetween(start, end);
+  if (length === 0 || distanceTravelled + length < armingDistance) return null;
+  const armedT = Math.max(0, (armingDistance - distanceTravelled) / length);
+  const armedStart = {
+    x: start.x + (end.x - start.x) * armedT,
+    y: start.y + (end.y - start.y) * armedT,
+    z: start.z + (end.z - start.z) * armedT,
+  };
+  const hit = segmentHit(armedStart, end, center, radius);
+  return hit === null ? null : armedT + hit * (1 - armedT);
+}
+
+export function projectileImpact(physicalT: number, proximityT: number) {
+  if (physicalT <= proximityT && Number.isFinite(physicalT))
+    return { t: physicalT, kind: "physical" as const };
+  if (Number.isFinite(proximityT))
+    return { t: proximityT, kind: "proximity" as const };
+  return null;
 }

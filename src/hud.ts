@@ -8,22 +8,53 @@ import {
   RADAR_RADIUS_PERCENT,
 } from "./combat";
 import type { Weapon } from "./types";
+import { enemyNames, weaponRoles } from "./content";
+
+export function devToolsMarkup() {
+  const weaponFields = [
+    ["damage", "DAMAGE"], ["fireRate", "FIRE RATE / SEC"], ["reload", "RELOAD TIME / SEC"],
+    ["maxMag", "MAGAZINE SIZE"], ["maxReserve", "RESERVE AMMO"],
+    ["bulletDrop", "BULLET DROP"], ["projectileSpeed", "PROJECTILE SPEED"], ["spread", "BULLET SPREAD"],
+    ["explosionDamage", "EXPLOSION DAMAGE"], ["explosionRadius", "EXPLOSION RADIUS"],
+  ];
+  const enemyFields = [
+    ["hp", "HP"], ["speed", "MOVEMENT SPEED"], ["attack", "DAMAGE"], ["attackRate", "ATTACK RATE / SEC"],
+    ["range", "ATTACK RANGE"], ["bulletDrop", "BULLET DROP"], ["projectileSpeed", "PROJECTILE SPEED"],
+    ["explosionDamage", "EXPLOSION DAMAGE"], ["explosionRadius", "EXPLOSION RADIUS"],
+  ];
+  const fieldMarkup = (group: string, type: string, fields: string[][]) =>
+    fields.map(([stat, label]) => `<label>${label}<input class="dev-stat" data-dev-group="${group}" data-dev-type="${type}" data-dev-stat="${stat}" type="number" min="0" step="any"></label>`).join("");
+  const weaponMarkup = ["MG", "CANNON", "BOFORS"].map((type) => {
+    const label =
+      type === "MG"
+        ? "BROWNING"
+        : type === "CANNON"
+          ? "AT GUN"
+          : "BOFORS";
+    const fields = type === "BOFORS"
+      ? [...weaponFields, ["proximityRadius", "AIR PROXIMITY RADIUS"], ["armingDistance", "FUSE ARMING DISTANCE"]]
+      : weaponFields;
+    return `<details class="dev-subsection"><summary>${label}</summary><div class="dev-field-grid">${fieldMarkup("weapon", type, fields)}</div></details>`;
+  }).join("");
+  const enemyMarkup = ["infantry", "armoredInfantry", "grenadierInfantry", "jeep", "truck", "apc", "tank", "heli", "aircraft"].map((type) => `<details class="dev-subsection"><summary>${enemyNames[type as keyof typeof enemyNames]}</summary><div class="dev-field-grid">${fieldMarkup("enemy", type, enemyFields)}</div></details>`).join("");
+  return `<details class="dev-tools" aria-label="Developer tools"><summary><span>DEVELOPER TOOLS</span><small>LIVE TUNING / LOCAL ONLY</small></summary><div class="dev-tools-content"><div class="dev-tools-grid"><label>SKIP TO WAVE<input id="devWave" type="number" min="1" max="999" value="1" inputmode="numeric"></label><button class="dev-button" id="devApplyWave">APPLY</button><label class="dev-toggle"><input id="devInfiniteAmmo" type="checkbox"> INFINITE AMMO</label><label class="dev-toggle"><input id="devGodMode" type="checkbox"> GOD MODE</label><button class="dev-button" id="devResupply">FULL RESUPPLY</button><button class="dev-button" id="devRepair">REPAIR INTEGRITY</button></div><div class="dev-section-title">WEAPON SYSTEMS</div>${weaponMarkup}<div class="dev-section-title">ENEMY TYPES</div>${enemyMarkup}</div></details>`;
+}
 
 export const screenMarkup = `
 <div id="hud">
   <div class="vignette"></div><div id="damageVeil"></div>
-  <header class="operation"><span class="eyebrow">COASTAL DEFENSE COMMAND</span><strong>BEACHHEAD <span>/ 07</span></strong><div class="live"><i></i><span id="status">STANDING BY</span></div></header>
+  <header class="operation"><span class="eyebrow">FIRST ARMY · COASTAL DEFENSE</span><strong>BEACHHEAD <span>/ NORMANDY</span></strong><div class="live"><i></i><span id="status">STANDING BY</span></div></header>
   <section class="compass" aria-label="Horizontal enemy compass"><div class="compass-meta"><span>TACTICAL BEARING</span><b id="heading">000° N</b><span><i class="red-dot"></i> HOSTILES</span></div><div class="compass-window" id="compassTrack"><div id="ticks"></div><div id="pins"></div><div class="heading-needle"></div></div><div class="compass-baseline"></div></section>
   <section class="score-block"><span class="eyebrow">MISSION SCORE</span><strong id="score">000000</strong><small>WAVE <b id="wave">01</b> <span>/</span> CONTACTS <b id="threats">00</b></small></section>
-  <aside class="objective"><span class="eyebrow">PRIMARY OBJECTIVE</span><p>DEFEND THE BEACHHEAD</p><div id="objectiveDetail">Watch the shoreline. Hold your position.</div></aside>
+  <aside class="objective"><span class="eyebrow">PRIMARY OBJECTIVE</span><p>HOLD THE BEACHHEAD</p><div id="objectiveDetail">Watch the shoreline. Hold your position.</div></aside>
   <div class="reticle" id="reticle"><i></i><i></i><i></i><i></i><b></b></div><div id="hitMarker">×</div>
-  <div id="targetInfo" class="target-info"></div><div class="message" id="message"></div><div class="wave-banner" id="banner"></div>
+  <div id="targetInfo" class="target-info"></div><div class="message" id="message"></div><div class="wave-banner" id="banner"></div><div id="bottomPrompt" class="bottom-prompt"><span id="bottomPromptLabel"></span><div class="bottom-progress"><div id="bottomProgressFill"></div></div></div>
   <section class="health-block panel"><div class="panel-heading"><span>◆ BUNKER INTEGRITY</span><b id="integrityState">OPERATIONAL</b></div><div class="health-number"><strong id="hp">1000</strong><span>/ 1000</span></div><div class="bar"><div class="fill" id="hpFill"></div></div><div class="radar-row"><div class="radar" role="img" aria-label="Proximity scanner: forward is up, 200 meter radius, hollow markers are beyond range"><div id="radarRings"></div><div class="radar-sweep"></div><div id="radarNorth" class="radar-north">N</div><div class="radar-self">▲</div><div id="radarContacts"></div></div><div class="radar-caption"><span class="eyebrow">PROXIMITY SCAN</span><b id="closest">NO CONTACT</b><small>Rings: ${RADAR_RING_INTERVAL_METERS} m · radius: ${RADAR_RANGE_METERS} m</small><small id="radarDistant">No distant contacts</small></div></div></section>
-  <nav class="loadout" aria-label="Weapons"><button data-weapon="MG" class="selected"><kbd>1</kbd><span>MG</span><small>7.62 MM</small></button><button data-weapon="CANNON"><kbd>2</kbd><span>CANNON</span><small>40 MM</small></button><button data-weapon="ROCKET"><kbd>3</kbd><span>ROCKET</span><small>ANTI-ARMOR</small></button></nav>
-  <section class="ammo-block panel"><div class="panel-heading"><span id="weaponName">MACHINE GUN</span><b id="weaponStatus">READY</b></div><div class="ammo-number"><strong id="ammo">120</strong><span>/ <b id="reserve">480</b><small>RESERVE</small></span></div><div class="rounds" id="rounds"></div><div class="reload-meter"><div id="reloadFill"></div></div><div class="ammo-footer"><span id="ammoType">7.62 MM · AUTOMATIC</span><span><kbd>R</kbd> RELOAD</span></div></section>
+  <nav class="loadout" aria-label="Weapons"><button data-weapon="MG" class="selected" title="${weaponRoles.MG}"><kbd>1</kbd><span>BROWNING</span><small>.30 CAL</small></button><button data-weapon="CANNON" title="${weaponRoles.CANNON}"><kbd>2</kbd><span>AT GUN</span><small>57 MM</small></button><button data-weapon="BOFORS" title="${weaponRoles.BOFORS}"><kbd>3</kbd><span>BOFORS</span><small>40 MM · AA</small></button></nav>
+  <section class="ammo-block panel"><div class="panel-heading"><span id="weaponName">M1919A4 BROWNING</span><b id="weaponStatus">READY</b></div><div class="ammo-number"><strong id="ammo">120</strong><span>/ <b id="reserve">480</b><small>RESERVE</small></span></div><div class="rounds" id="rounds"></div><div class="reload-meter"><div id="reloadFill"></div></div><div class="ammo-footer"><span id="ammoType">.30 CAL · AUTOMATIC</span><span><kbd>R</kbd> RELOAD</span></div></section>
   <footer class="control-strip"><span>MOUSE <b>AIM</b></span><span>LMB <b>FIRE</b></span><span>RMB <b>ZOOM</b></span><span>1–3 <b>WEAPONS</b></span><span>ESC <b>PAUSE</b></span><button id="pauseButton">Ⅱ PAUSE</button></footer>
 </div>
-<div class="overlay" id="overlay"><div class="card"><div class="eyebrow"><span class="tag">OPERATION 07</span> COASTAL DEFENSE</div><h1>BEACHHEAD<span>LAST STAND</span></h1><div class="title-rule"></div><p>A quiet horizon.<br>A position you cannot abandon.</p><p class="description">Man the gun. Watch every bearing. Stop infantry, armor and aircraft before they overrun your beachhead.</p><div class="mission-stats"><div><b>360°</b><span>BATTLEFIELD</span></div><div><b>03</b><span>WEAPON SYSTEMS</span></div><div><b>10</b><span>ASSAULT WAVES</span></div></div><button class="button" id="start">DEPLOY TO EMPLACEMENT <span>→</span></button><div class="hint">Mouse to aim and fire · 1–3 weapons · R reload · Esc pause</div></div><div class="title-coordinate">SECTOR 07 / NORTH SHORE<br>DEFENSIVE POSITION · 06:40 HRS</div></div>`;
+<div class="overlay" id="overlay"><div class="card"><div class="eyebrow"><span class="tag">OPERATION OVERLORD</span> NORMANDY BEACHHEAD</div><h1>BEACHHEAD<span>LAST STAND</span></h1><div class="title-rule"></div><p>A grey dawn over the Channel.<br>A position you cannot abandon.</p><p class="description">Man the emplacement. Watch every bearing. Stop German infantry, armor, and aircraft before they overrun your beachhead.</p><div class="mission-stats"><div><b>360°</b><span>BATTLEFIELD</span></div><div><b>03</b><span>WEAPON SYSTEMS</span></div><div><b>10</b><span>ASSAULT WAVES</span></div></div><button class="button" id="start">DEPLOY TO EMPLACEMENT <span>→</span></button>${devToolsMarkup()}<div class="hint">Mouse to aim and fire · 1–3 weapons · R reload · Esc pause</div></div><div class="title-coordinate">SECTOR OMAHA / UTAH BEACH<br>DEFENSIVE POSITION · 06 JUN 1944 · 06:40 HRS</div></div>`;
 
 interface Contact {
   id: number;
@@ -61,8 +92,8 @@ export class CombatHud {
   private damageTime = 0;
   private hitTime = 0;
   private currentSpread = 0;
-  private camera: THREE.Camera;
-  constructor(camera: THREE.Camera) {
+  private camera: THREE.PerspectiveCamera;
+  constructor(camera: THREE.PerspectiveCamera) {
     this.camera = camera;
     document
       .querySelectorAll<HTMLElement>("#hud [id]")
@@ -204,10 +235,10 @@ export class CombatHud {
     this.text(
       "ammoType",
       s.weapon === "MG"
-        ? "7.62 MM · AUTOMATIC"
+        ? ".30 CAL · AUTOMATIC"
         : s.weapon === "CANNON"
-          ? "40 MM · HIGH EXPLOSIVE"
-          : "ROCKET · ANTI-ARMOR",
+          ? "57 MM · ARMOR-PIERCING"
+          : "40 MM · ASSISTED FLAK",
     );
     document
       .querySelectorAll<HTMLElement>("[data-weapon]")
@@ -240,6 +271,22 @@ export class CombatHud {
           ? "Enemies in firing range. Prioritize nearby threats."
           : "Red pins mark incoming contacts. Scan all bearings.",
     );
+    const prompt = this.el("bottomPrompt");
+    const promptLabel = this.el("bottomPromptLabel");
+    const progressFill = this.el("bottomProgressFill");
+    const isReloading = s.reload > 0;
+    const isIntermission = s.state === "intermission";
+    prompt.classList.toggle("show", isReloading || isIntermission);
+    if (isReloading) {
+      promptLabel.textContent = "Reloading";
+      progressFill.style.width = `${(1 - s.reload / s.reloadDuration) * 100}%`;
+    } else if (isIntermission) {
+      promptLabel.textContent = "Press Space to Start";
+      progressFill.style.width = `${Math.max(0, Math.min(1, 1 - s.intermission / 12)) * 100}%`;
+    } else {
+      promptLabel.textContent = "";
+      progressFill.style.width = "0%";
+    }
     this.damageTime = Math.max(0, this.damageTime - dt);
     this.hitTime = Math.max(0, this.hitTime - dt);
     this.el("damageVeil").style.opacity = String(this.damageTime);
@@ -260,7 +307,7 @@ export class CombatHud {
   private static readonly reticleRange: Record<Weapon, { min: number; max: number }> = {
     MG: { min: 6, max: 90 },
     CANNON: { min: 30, max: 46 },
-    ROCKET: { min: 42, max: 56 },
+    BOFORS: { min: 48, max: 64 },
   };
   updateCrosshairSpread(size: number) {
     const reticle = this.el("reticle");

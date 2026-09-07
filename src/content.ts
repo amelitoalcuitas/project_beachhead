@@ -10,47 +10,100 @@ export const weapons: Record<
     fireRate: number;
     reload: number;
     damage: number;
+    bulletDrop: number;
+    projectileSpeed: number;
+    spread: number;
+    explosionDamage: number;
+    explosionRadius: number;
     kind: "hitscan" | "projectile";
     splash: number;
+    proximityRadius: number;
+    armingDistance: number;
   }
 > = {
   MG: {
-    name: "MACHINE GUN",
+    name: "M1919A4 BROWNING",
     mag: 120,
     reserve: 480,
     maxMag: 120,
     maxReserve: 480,
-    fireRate: 12,
+    fireRate: 9,
     reload: 3,
     damage: 30,
+    bulletDrop: 9.81,
+    projectileSpeed: 650,
+    spread: 0.1,
+    explosionDamage: 0,
+    explosionRadius: 0,
     kind: "hitscan",
     splash: 0,
+    proximityRadius: 0,
+    armingDistance: 0,
   },
   CANNON: {
-    name: "HEAVY CANNON",
+    name: "M1 57MM AT GUN",
     mag: 1,
     reserve: 17,
     maxMag: 1,
     maxReserve: 17,
     fireRate: 1.0,
-    reload: 1.6,
+    reload: 1.2,
     damage: 400,
+    bulletDrop: 9.81,
+    projectileSpeed: 230,
+    spread: 0.012,
+    explosionDamage: 120,
+    explosionRadius: 4,
     kind: "projectile",
-    splash: 8,
+    splash: 4,
+    proximityRadius: 0,
+    armingDistance: 0,
   },
-  ROCKET: {
-    name: "ROCKET LAUNCHER",
-    mag: 1,
-    reserve: 5,
-    maxMag: 1,
-    maxReserve: 5,
-    fireRate: 0.65,
-    reload: 2.8,
-    damage: 900,
+  BOFORS: {
+    name: "40 MM BOFORS L/60",
+    mag: 4,
+    reserve: 96,
+    maxMag: 4,
+    maxReserve: 96,
+    fireRate: 0.75,
+    reload: 1.5,
+    damage: 160,
+    bulletDrop: 9.81,
+    projectileSpeed: 650,
+    spread: 0.008,
+    explosionDamage: 320,
+    explosionRadius: 10,
     kind: "projectile",
-    splash: 18,
+    splash: 10,
+    proximityRadius: 6,
+    armingDistance: 20,
   },
 };
+// Shared by impact and splash damage so explosive rounds cannot bypass armor.
+export const weaponEffectiveness: Record<Weapon, Record<EnemyType, number>> = {
+  MG: {
+    infantry: 1, armoredInfantry: 0.8, grenadierInfantry: 1,
+    jeep: 0.2, truck: 0.15, apc: 0.04, tank: 0.015,
+    heli: 0.3, aircraft: 0.3,
+  },
+  CANNON: {
+    infantry: 0.5, armoredInfantry: 0.65, grenadierInfantry: 0.5,
+    jeep: 1, truck: 1, apc: 1.25, tank: 1.5,
+    heli: 0.45, aircraft: 0.45,
+  },
+  BOFORS: {
+    infantry: 0.6, armoredInfantry: 0.6, grenadierInfantry: 0.6,
+    jeep: 0.9, truck: 0.8, apc: 0.4, tank: 0.1,
+    heli: 1.5, aircraft: 1.5,
+  },
+};
+
+export const weaponRoles: Record<Weapon, string> = {
+  MG: "INFANTRY · WEAK VS VEHICLES",
+  CANNON: "ANTI-ARMOR · AIM FOR DIRECT HITS",
+  BOFORS: "ANTI-AIR · ASSISTED FLAK",
+};
+
 export const wavePlans: EnemyType[][] = [
   [
     "infantry",
@@ -293,72 +346,194 @@ export const wavePlans: EnemyType[][] = [
     "tank",
   ],
 ];
+// Replace a growing share of basic infantry with specialist variants while
+// preserving each authored wave's original contact count.
+const infantryMix = [
+  [10, 0, 0],
+  [9, 2, 0],
+  [7, 2, 1],
+  [6, 2, 2],
+  [5, 3, 2],
+  [4, 3, 3],
+  [3, 3, 2],
+  [2, 3, 2],
+  [1, 2, 1],
+  [1, 2, 2],
+] as const;
+wavePlans.forEach((plan, waveIndex) => {
+  const [basic, armored, grenadier] = infantryMix[waveIndex];
+  let basicSeen = 0,
+    armoredSeen = 0,
+    grenadierSeen = 0;
+  for (let i = 0; i < plan.length; i++) {
+    if (plan[i] !== "infantry") continue;
+    if (armoredSeen < armored) {
+      plan[i] = "armoredInfantry";
+      armoredSeen++;
+    } else if (grenadierSeen < grenadier) {
+      plan[i] = "grenadierInfantry";
+      grenadierSeen++;
+    } else if (basicSeen < basic) {
+      basicSeen++;
+    }
+  }
+});
+export const enemyNames: Record<EnemyType, string> = {
+  infantry: "WEHRMACHT RIFLEMAN",
+  armoredInfantry: "PANZERGRENADIER",
+  grenadierInfantry: "GERMAN GRENADIER",
+  jeep: "KUBELWAGEN",
+  truck: "OPEL BLITZ",
+  apc: "SD.KFZ. 251",
+  tank: "PANZER IV",
+  heli: "FA 223 DRACHE",
+  aircraft: "JU 87 STUKA",
+};
+
 export const specs: Record<
   EnemyType,
   {
+    name: string;
     hp: number;
     speed: number;
     attack: number;
+    attackRate: number;
     range: number;
+    bulletDrop: number;
+    projectileSpeed: number;
+    explosionDamage: number;
+    explosionRadius: number;
     score: number;
     color: number;
     air?: boolean;
+    grenade?: boolean;
   }
 > = {
   infantry: {
-    hp: 60,
-    speed: 6,
+    name: "WEHRMACHT RIFLEMAN",
+    hp: 100,
+    speed: 7.7,
     attack: 5,
-    range: 65,
+    attackRate: 0.2,
+    range: 90,
+    bulletDrop: 3.675,
+    projectileSpeed: 80,
+    explosionDamage: 0,
+    explosionRadius: 0,
     score: 100,
     color: 0x525d54,
   },
+  armoredInfantry: {
+    name: "PANZERGRENADIER",
+    hp: 150,
+    speed: 6.6,
+    attack: 5,
+    attackRate: 0.2,
+    range: 65,
+    bulletDrop: 3.675,
+    projectileSpeed: 80,
+    explosionDamage: 0,
+    explosionRadius: 0,
+    score: 200,
+    color: 0xa63b32,
+  },
+  grenadierInfantry: {
+    name: "GERMAN GRENADIER",
+    hp: 100,
+    speed: 6.6,
+    attack: 25,
+    attackRate: 0.125,
+    range: 85,
+    bulletDrop: 12,
+    projectileSpeed: 50,
+    explosionDamage: 180,
+    explosionRadius: 14,
+    score: 250,
+    color: 0x315fa8,
+    grenade: true,
+  },
   jeep: {
+    name: "KUBELWAGEN",
     hp: 240,
-    speed: 12,
+    speed: 13.2,
     attack: 3,
+    attackRate: 0.2,
     range: 90,
+    bulletDrop: 3.675,
+    projectileSpeed: 55,
+    explosionDamage: 0,
+    explosionRadius: 0,
     score: 250,
     color: 0x59644d,
   },
   truck: {
+    name: "OPEL BLITZ",
     hp: 420,
-    speed: 7,
+    speed: 7.7,
     attack: 7,
+    attackRate: 0.142,
     range: 75,
+    bulletDrop: 3.675,
+    projectileSpeed: 55,
+    explosionDamage: 0,
+    explosionRadius: 0,
     score: 450,
     color: 0x687060,
   },
   apc: {
+    name: "SD.KFZ. 251",
     hp: 700,
-    speed: 4.5,
+    speed: 4.95,
     attack: 6,
+    attackRate: 0.2,
     range: 125,
+    bulletDrop: 3.675,
+    projectileSpeed: 55,
+    explosionDamage: 0,
+    explosionRadius: 0,
     score: 700,
     color: 0x465244,
   },
   tank: {
+    name: "PANZER IV",
     hp: 1200,
-    speed: 3,
+    speed: 3.3,
     attack: 11,
+    attackRate: 0.2,
     range: 170,
+    bulletDrop: 3.675,
+    projectileSpeed: 55,
+    explosionDamage: 0,
+    explosionRadius: 0,
     score: 1300,
     color: 0x41483d,
   },
   heli: {
+    name: "FA 223 DRACHE",
     hp: 480,
-    speed: 8,
+    speed: 12,
     attack: 6,
+    attackRate: 0.2,
     range: 140,
+    bulletDrop: 3.675,
+    projectileSpeed: 55,
+    explosionDamage: 0,
+    explosionRadius: 0,
     score: 1000,
     color: 0x4d5655,
     air: true,
   },
   aircraft: {
+    name: "JU 87 STUKA",
     hp: 360,
     speed: 34,
     attack: 8,
+    attackRate: 0.2,
     range: 145,
+    bulletDrop: 3.675,
+    projectileSpeed: 55,
+    explosionDamage: 0,
+    explosionRadius: 0,
     score: 1500,
     color: 0x626c70,
     air: true,

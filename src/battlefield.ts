@@ -52,7 +52,10 @@ export class Battlefield {
         depthWrite: false,
         uniforms: {},
         vertexShader: `varying vec3 vDirection; void main(){vDirection=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
-        fragmentShader: `varying vec3 vDirection; void main(){vec3 d=normalize(vDirection); float h=max(d.y,0.); vec3 c=mix(vec3(.93,.77,.55),vec3(.22,.48,.62),pow(h,.5)); float s=pow(max(dot(d,normalize(vec3(-.6,.3,-.65))),0.),190.); c+=vec3(1.,.68,.3)*s*.8; gl_FragColor=vec4(c,1.);}`,
+        // Dusk sky: a hot orange band low on the horizon burning up through
+        // rose and violet into a deep, cooling twilight blue at the zenith,
+        // with a soft glowing sun disc low over the horizon.
+        fragmentShader: `varying vec3 vDirection; void main(){vec3 d=normalize(vDirection); float h=max(d.y,0.); vec3 horizon=vec3(1.,.53,.22); vec3 mid=vec3(.72,.32,.42); vec3 zenith=vec3(.13,.13,.32); vec3 c=mix(horizon,mid,pow(h,.4)); c=mix(c,zenith,pow(h,1.6)); float s=pow(max(dot(d,normalize(vec3(-.85,.14,-.5))),0.),260.); c+=vec3(1.,.62,.28)*s*1.4; float glow=pow(max(dot(d,normalize(vec3(-.85,.14,-.5))),0.),8.); c+=vec3(1.,.42,.16)*glow*.3; gl_FragColor=vec4(c,1.);}`,
       }),
     );
     this.group.add(sky);
@@ -66,9 +69,9 @@ export class Battlefield {
         y = terrainHeight(x, z);
       positions.setY(i, y);
       const col = new THREE.Color().setHSL(
-        0.107 + Math.sin(x * 0.15) * 0.006,
-        0.28,
-        0.51 + Math.sin(x * 0.04 + z * 0.03) * 0.035,
+        0.068 + Math.sin(x * 0.15) * 0.006,
+        0.42,
+        0.5 + Math.sin(x * 0.04 + z * 0.03) * 0.035,
       );
       if (z < -270) col.multiplyScalar(0.68);
       colors.push(col.r, col.g, col.b);
@@ -78,10 +81,10 @@ export class Battlefield {
     const sandCanvas = document.createElement("canvas");
     sandCanvas.width = sandCanvas.height = 256;
     const ctx = sandCanvas.getContext("2d")!;
-    ctx.fillStyle = "#bca37c";
+    ctx.fillStyle = "#c99568";
     ctx.fillRect(0, 0, 256, 256);
     for (let i = 0; i < 16000; i++) {
-      ctx.fillStyle = Math.random() > 0.5 ? "#d8c19a" : "#a68e6a";
+      ctx.fillStyle = Math.random() > 0.5 ? "#e0ae7e" : "#a97e5a";
       ctx.fillRect(Math.random() * 256, Math.random() * 256, 1, 1);
     }
     const sand = new THREE.CanvasTexture(sandCanvas);
@@ -102,7 +105,9 @@ export class Battlefield {
       uniforms: { time: { value: 0 } },
       transparent: true,
       vertexShader: `varying vec3 vPos; void main(){vPos=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
-      fragmentShader: `varying vec3 vPos; uniform float time; void main(){float wave=sin(vPos.y*.15+time*1.3+sin(vPos.x*.02)*1.4); float detail=sin(vPos.x*.3+vPos.y*.18-time)*.08; vec3 c=mix(vec3(.08,.27,.29),vec3(.27,.54,.53),wave*.3+.45+detail); float shore=smoothstep(260.,298.,-vPos.y); float foam=pow(max(0.,sin(vPos.y*.46+time*1.5+sin(vPos.x*.04))),9.); c=mix(c,vec3(.83,.87,.73),foam*shore*.85); gl_FragColor=vec4(c,1.);}`,
+      // Sunset water: deep plum-blue troughs catching an orange glaze near
+      // the shore where the low sun reflects across the swell.
+      fragmentShader: `varying vec3 vPos; uniform float time; void main(){float wave=sin(vPos.y*.15+time*1.3+sin(vPos.x*.02)*1.4); float detail=sin(vPos.x*.3+vPos.y*.18-time)*.08; vec3 c=mix(vec3(.1,.16,.28),vec3(.55,.4,.32),wave*.3+.45+detail); float shore=smoothstep(260.,298.,-vPos.y); float foam=pow(max(0.,sin(vPos.y*.46+time*1.5+sin(vPos.x*.04))),9.); c=mix(c,vec3(.95,.78,.6),foam*shore*.85); float glint=pow(max(0.,sin(vPos.y*.22+time*.9)),22.); c+=vec3(1.,.55,.22)*glint*.35; gl_FragColor=vec4(c,1.);}`,
     });
     this.water = new THREE.Mesh(
       new THREE.PlaneGeometry(2000, 600),

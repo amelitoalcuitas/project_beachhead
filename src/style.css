@@ -448,9 +448,10 @@ kbd {
   pointer-events: auto;
 }
 .loadout button {
-  width: 84px;
+  width: 128px;
+  min-width: 0;
   display: grid;
-  grid-template-columns: 17px 1fr;
+  grid-template-columns: 22px minmax(0, 1fr);
   gap: 6px;
   padding: 11px 9px;
   background: #102019a8;
@@ -465,11 +466,19 @@ kbd {
   color: #f9ddac;
 }
 .loadout button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 9px;
   letter-spacing: 1px;
   align-self: center;
 }
 .loadout button small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   grid-column: 1 / -1;
   font-size: 6px;
   letter-spacing: 1px;
@@ -565,11 +574,11 @@ kbd {
 .reticle[data-weapon="CANNON"] i {
   background: #f8d491cc;
 }
-.reticle[data-weapon="ROCKET"] {
-  border: 1px dashed #f8d49199;
+.reticle[data-weapon="BOFORS"] {
+  border: 1px solid #f8d491cc;
   border-radius: 50%;
 }
-.reticle[data-weapon="ROCKET"] i {
+.reticle[data-weapon="BOFORS"] i {
   display: none;
 }
 .reticle.zoom {
@@ -624,6 +633,34 @@ kbd {
 }
 .wave-banner.show {
   opacity: 1;
+}
+.bottom-prompt {
+  position: absolute;
+  left: 50%;
+  bottom: 30%;
+  transform: translateX(-50%);
+  min-width: 220px;
+  text-align: center;
+  color: #f3ddb3;
+  font: 11px monospace;
+  letter-spacing: 2px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.bottom-prompt.show {
+  opacity: 1;
+}
+.bottom-progress {
+  height: 3px;
+  margin-top: 9px;
+  background: #66725d88;
+  box-shadow: 0 0 10px #101a1599;
+}
+.bottom-progress div {
+  height: 100%;
+  width: 0;
+  background: #e5c687;
+  transition: width 0.1s linear;
 }
 .small {
   font: 9px monospace;
@@ -736,6 +773,121 @@ kbd {
 .button span {
   font-size: 19px;
 }
+.dev-tools {
+  margin-top: 22px;
+  padding: 0;
+  max-width: 500px;
+  background: #101d18cc;
+  border: 1px solid #a6b59644;
+}
+.dev-tools > summary {
+  display: flex;
+  justify-content: space-between;
+  padding: 13px;
+  color: #e2c98f;
+  cursor: pointer;
+  list-style: none;
+  font: 9px monospace;
+  letter-spacing: 1.5px;
+}
+.dev-tools > summary::-webkit-details-marker { display: none; }
+.dev-tools > summary::after { content: "+"; }
+.dev-tools[open] > summary::after { content: "−"; }
+.dev-tools > summary small {
+  color: #819681;
+  font: 8px monospace;
+}
+.dev-tools-content {
+  max-height: 42vh;
+  overflow-y: auto;
+  padding: 0 13px 13px;
+}
+.dev-section-title {
+  margin: 16px 0 7px;
+  padding-top: 9px;
+  border-top: 1px solid #a6b59633;
+  color: #c9b47d;
+  font: 8px monospace;
+  letter-spacing: 1.5px;
+}
+.dev-subsection {
+  margin-top: 5px;
+  border: 1px solid #a6b5962e;
+}
+.dev-subsection > summary {
+  padding: 8px;
+  color: #c8d1b9;
+  cursor: pointer;
+  list-style: none;
+  font: 9px monospace;
+  letter-spacing: 1px;
+}
+.dev-subsection > summary::-webkit-details-marker { display: none; }
+.dev-subsection > summary::before { content: "▸ "; color: #b49c68; }
+.dev-subsection[open] > summary::before { content: "▾ "; }
+.dev-field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  padding: 0 8px 9px;
+}
+.dev-field-grid label { font-size: 7px; }
+.dev-field-grid input[type="number"] { padding: 5px; font-size: 11px; }
+.dev-tools-grid {
+  padding-top: 2px;
+}
+.dev-tools-heading {
+  display: flex;
+  justify-content: space-between;
+  color: #e2c98f;
+  font: 9px monospace;
+  letter-spacing: 1.5px;
+}
+.dev-tools-heading small {
+  color: #819681;
+  font: 8px monospace;
+}
+.dev-tools-grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: end;
+  margin-top: 12px;
+}
+.dev-tools label {
+  color: #aebda5;
+  font: 8px monospace;
+  letter-spacing: 1px;
+}
+.dev-tools input[type="number"] {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 5px;
+  padding: 7px;
+  color: #f0dfb7;
+  background: #1c3024;
+  border: 1px solid #a6b59666;
+  font: 14px monospace;
+}
+.dev-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  cursor: pointer;
+}
+.dev-toggle input { accent-color: #d7bd83; }
+.dev-button {
+  padding: 8px 10px;
+  color: #e7d5ab;
+  background: #263b2d;
+  border: 1px solid #a6b59666;
+  cursor: pointer;
+  font: bold 8px monospace;
+  letter-spacing: 1px;
+}
+.dev-button:hover { background: #38533d; }
 .hint {
   font-size: 8px;
   color: #9eaf97;
@@ -798,7 +950,7 @@ kbd {
     font-size: 7px;
   }
   .loadout button {
-    width: 65px;
+    width: clamp(92px, 30vw, 128px);
     padding: 10px 6px;
   }
   .objective {
