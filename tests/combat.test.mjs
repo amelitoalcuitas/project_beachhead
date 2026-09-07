@@ -4,6 +4,7 @@ import {
   advanceEnemyFire,
   enemyProjectileDamage,
   resolveWeaponDamage,
+  resolveSplashDamage,
   splashDamage,
   proximityHit,
   projectileImpact,
@@ -20,7 +21,7 @@ import {
   segmentHit,
   terrainIntersection,
 } from "../src/combat.ts";
-import { specs, weapons, weaponEffectiveness } from "../src/content.ts";
+import { specs, weapons, weaponEffectiveness, splashEffectiveness } from "../src/content.ts";
 import { wavePlans } from "../src/content.ts";
 
 test("short projectile steps still collide with terrain", () => {
@@ -179,6 +180,7 @@ test("infantry variants and ground speed balance are defined", () => {
   assert.equal(specs.armoredInfantry.color, 0xa63b32);
   assert.equal(specs.armoredInfantry.score, 200);
   assert.equal(specs.grenadierInfantry.score, 250);
+  assert.equal(specs.truck.hp, 390);
   for (const [type, baseline] of Object.entries({ jeep: 12, truck: 7, apc: 4.5, tank: 3 }))
     assert.ok(Math.abs(specs[type].speed - baseline * 1.1) < 1e-9);
   assert.equal(specs.armoredInfantry.speed, 6.6);
@@ -215,7 +217,7 @@ for (const [enemy, expected] of Object.entries(matchupDamage)) {
       assert.ok(weaponEffectiveness[weapon][enemy] > 0, "soft counters never grant immunity");
       const blast = splashDamage(200, 10, 5, true);
       assert.equal(blast, 65);
-      assert.equal(resolveWeaponDamage(blast, weapon, enemy), 65 * weaponEffectiveness[weapon][enemy]);
+      assert.equal(resolveSplashDamage(blast, weapon, enemy), 65 * splashEffectiveness[weapon][enemy]);
     });
   });
 }
@@ -237,17 +239,69 @@ test("blast cannot double-hit, penetrate cover, or damage outside its radius", (
   assert.equal(splashDamage(320, 0, 0, true), 0);
 });
 
+test("AT Gun splash is stronger than Bofors against infantry", () => {
+  const atCenter = resolveSplashDamage(
+    splashDamage(weapons.CANNON.explosionDamage, weapons.CANNON.explosionRadius, 0, true),
+    "CANNON",
+    "infantry",
+  );
+  const boforsCenter = resolveSplashDamage(
+    splashDamage(weapons.BOFORS.explosionDamage, weapons.BOFORS.explosionRadius, 0, true),
+    "BOFORS",
+    "infantry",
+  );
+  assert.ok(atCenter > boforsCenter);
+  assert.ok(atCenter > specs.infantry.hp, "AT Gun center splash kills riflemen");
+  assert.ok(boforsCenter < specs.armoredInfantry.hp, "Bofors center splash does not kill panzergrenadiers");
+  assert.equal(atCenter, 162.5);
+  assert.equal(boforsCenter, 72.8);
+  assert.equal(
+    resolveSplashDamage(
+      splashDamage(weapons.CANNON.explosionDamage, weapons.CANNON.explosionRadius, 2, true),
+      "CANNON",
+      "infantry",
+    ),
+    121.875,
+  );
+  assert.ok(
+    Math.abs(
+      resolveSplashDamage(
+        splashDamage(weapons.BOFORS.explosionDamage, weapons.BOFORS.explosionRadius, 6, true),
+        "BOFORS",
+        "infantry",
+      ) - 29.12,
+    ) < 1e-9,
+  );
+});
+
+test("destroyed vehicles blast nearby infantry with scaled radial damage", () => {
+  assert.equal(specs.jeep.explosionDamage, 140);
+  assert.equal(specs.jeep.explosionRadius, 6);
+  assert.equal(specs.truck.explosionDamage, 180);
+  assert.equal(specs.truck.explosionRadius, 8);
+  assert.equal(specs.apc.explosionDamage, 220);
+  assert.equal(specs.apc.explosionRadius, 9);
+  assert.equal(specs.tank.explosionDamage, 300);
+  assert.equal(specs.tank.explosionRadius, 12);
+  assert.equal(specs.heli.explosionDamage, 160);
+  assert.equal(specs.heli.explosionRadius, 8);
+  assert.equal(splashDamage(specs.jeep.explosionDamage, specs.jeep.explosionRadius, 0, true), 91);
+  assert.equal(splashDamage(specs.tank.explosionDamage, specs.tank.explosionRadius, 6, true), 97.5);
+  assert.equal(specs.infantry.explosionDamage, 0);
+  assert.equal(specs.grenadierInfantry.explosionDamage, 180);
+});
+
 test("Bofors ammunition and rate preserve its four-round automatic role", () => {
   const gun = weapons.BOFORS;
   assert.equal(gun.maxMag, 4);
   assert.equal(gun.maxReserve, 96);
-  assert.equal(gun.fireRate, 0.75);
+  assert.equal(gun.fireRate, 1.2);
   assert.equal(gun.reload, 1.5);
   assert.equal(gun.projectileSpeed, 650);
   assert.equal(gun.proximityRadius, 6);
   assert.equal(gun.armingDistance, 20);
-  assert.equal(weapons.CANNON.explosionRadius, 4);
-  assert.equal(weapons.CANNON.explosionDamage, 120);
+  assert.equal(weapons.CANNON.explosionRadius, 8);
+  assert.equal(weapons.CANNON.explosionDamage, 250);
   assert.equal(Math.ceil(specs.jeep.hp / resolveWeaponDamage(30, "MG", "jeep")), 40);
   assert.equal(Math.ceil(specs.tank.hp / resolveWeaponDamage(400, "CANNON", "tank")), 2);
   assert.equal(Math.ceil(specs.tank.hp / resolveWeaponDamage(160, "BOFORS", "tank")), 75);
@@ -316,6 +370,9 @@ test("other enemies retain single-shot damage and grenade damage", () => {
   for (const [type, definition] of Object.entries(specs)) {
     if (type === "infantry") continue;
     assert.equal(definition.burst, undefined);
-    assert.equal(enemyProjectileDamage(definition), definition.grenade ? definition.explosionDamage : definition.attack * 3);
+    assert.equal(
+      enemyProjectileDamage(definition),
+      definition.grenade ? GRENADE_DAMAGE : definition.attack * 3,
+    );
   }
 });

@@ -530,25 +530,29 @@ kbd {
   width: 1px;
   height: 8px;
   top: 0;
-  left: 16px;
+  left: 50%;
+  transform: translateX(-50%);
 }
 .reticle i:nth-child(2) {
   width: 1px;
   height: 8px;
   bottom: 0;
-  left: 16px;
+  left: 50%;
+  transform: translateX(-50%);
 }
 .reticle i:nth-child(3) {
   height: 1px;
   width: 8px;
-  top: 16px;
+  top: 50%;
   left: 0;
+  transform: translateY(-50%);
 }
 .reticle i:nth-child(4) {
   height: 1px;
   width: 8px;
-  top: 16px;
+  top: 50%;
   right: 0;
+  transform: translateY(-50%);
 }
 .reticle b {
   position: absolute;
@@ -556,7 +560,7 @@ kbd {
   top: 50%;
   width: 3px;
   height: 3px;
-  margin: -1.5px 0 0 -1.5px;
+  transform: translate(-50%, -50%);
   background: #f8d491;
   border-radius: 50%;
 }
@@ -591,6 +595,50 @@ kbd {
   transform: translate(-50%, -50%);
   font-size: 34px;
   opacity: 0;
+}
+#directionRing {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.hit-arrow,
+.air-arrow {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  width: 0;
+  height: 0;
+  font-size: 22px;
+  line-height: 1;
+  text-align: center;
+  transform-origin: center center;
+  text-shadow: 0 0 10px currentColor;
+}
+.hit-arrow {
+  color: #ff4a3a;
+  filter: drop-shadow(0 0 6px #cb372866);
+}
+.air-arrow {
+  color: #6eb8ff;
+  font-size: 28px;
+  filter: drop-shadow(0 0 8px #3a8fd866);
+  animation: threat 0.85s infinite;
+}
+#airWarningLabel {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font: 8px monospace;
+  letter-spacing: 1.2px;
+  color: #8ec8ff;
+  text-shadow: 0 0 8px #2a6aa888;
+  white-space: nowrap;
+  pointer-events: none;
 }
 .target-info {
   position: absolute;

@@ -11,6 +11,7 @@ import {
   advanceEnemyFire,
   enemyProjectileDamage,
   resolveWeaponDamage,
+  resolveSplashDamage,
   splashDamage,
   proximityHit,
   projectileImpact,
@@ -56,6 +57,7 @@ interface Shot {
   distanceTravelled?: number;
   proximityRadius?: number;
   armingDistance?: number;
+  sourceBearing?: number;
 }
 interface Effect {
   mesh: THREE.Mesh;
@@ -116,6 +118,11 @@ interface Wreckage {
 interface Corpse {
   group: THREE.Group;
   life: number;
+}
+interface ScorchMark {
+  mesh: THREE.Mesh;
+  life: number;
+  maxLife: number;
 }
 
 const app = document.querySelector<HTMLElement>("#app")!;
@@ -210,13 +217,43 @@ const smokeTexture = (() => {
   texture.needsUpdate = true;
   return texture;
 })();
+// Dark irregular scorch decal for ground impacts.
+const scorchTexture = (() => {
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  const cx = size / 2,
+    cy = size / 2;
+  const blobs = 6;
+  for (let i = 0; i < blobs; i++) {
+    const angle = (i / blobs) * Math.PI * 2 + Math.random() * 0.6;
+    const dist = Math.random() * size * 0.18;
+    const bx = cx + Math.cos(angle) * dist;
+    const by = cy + Math.sin(angle) * dist * 0.9;
+    const radius = size * (0.18 + Math.random() * 0.22);
+    const gradient = ctx.createRadialGradient(bx, by, 0, bx, by, radius);
+    const alpha = 0.45 + Math.random() * 0.25;
+    gradient.addColorStop(0, `rgba(28,22,16,${alpha})`);
+    gradient.addColorStop(0.5, `rgba(42,34,24,${alpha * 0.55})`);
+    gradient.addColorStop(1, "rgba(52,44,34,0)");
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(bx, by, radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.needsUpdate = true;
+  return texture;
+})();
 const enemies: Enemy[] = [],
   shots: Shot[] = [],
   effects: Effect[] = [],
   tracers: Tracer[] = [],
   muzzleSmokes: MuzzleSmoke[] = [],
   wreckages: Wreckage[] = [],
-  corpses: Corpse[] = [];
+  corpses: Corpse[] = [],
+  scorchMarks: ScorchMark[] = [];
 let muzzleSmokeTrail: MuzzleSmokeTrail | undefined;
 // Pool of reusable point lights for gunfire flashes - both the player's shots
 // and enemy fire briefly light up their surroundings. Pooling avoids the
@@ -279,7 +316,8 @@ let simulationTime = 0,
   previousTime = performance.now();
 let activePlan = [...wavePlans[0]],
   endless = false,
-  heavyAttackReady = 0;
+  heavyAttackReady = 0,
+  airWarningEnemyId: number | null = null;
 let messageTimer = 0,
   bannerTimer = 0,
   inspectionTimer = 0;
@@ -328,17 +366,24 @@ let spreadHeat = 0,
   spreadY = 0;
 const spreadBiasMax = { MG: 0.018, CANNON: 0.004, BOFORS: 0.006 } as const;
 const MG_ADS_SPREAD_MULTIPLIER = 0.2;
+// Cold Browning still has a cone so the opening burst is not laser-accurate.
+const MG_MIN_BLOOM = 0.22;
 // Use standard Earth gravity for every player-fired weapon so drop is
 // physically consistent across the machine gun, cannon, and Bofors cannon.
 const PLAYER_PROJECTILE_GRAVITY = 9.81;
 const ENEMY_PROJECTILE_GRAVITY = 24.5 * 0.3;
 function bloomFromHeat(heat: number) {
   const t = THREE.MathUtils.clamp(heat, 0, 1);
-  // Cubic ease-in: first ~1.5s stays tight, then opens to the cap
+  // Cubic ease-in: bloom stays modest at first, then opens to the cap
   return t * t * t;
 }
+function bloomAmount(heat: number, currentWeapon: Weapon) {
+  const bloom = bloomFromHeat(heat);
+  if (currentWeapon !== "MG") return bloom;
+  return MG_MIN_BLOOM + (1 - MG_MIN_BLOOM) * bloom;
+}
 function applyBloomSpread() {
-  const baseSpread = bloomFromHeat(spreadHeat) * weapons[weapon].spread;
+  const baseSpread = bloomAmount(spreadHeat, weapon) * weapons[weapon].spread;
   spreadAngle = zoom && weapon === "MG"
     ? baseSpread * MG_ADS_SPREAD_MULTIPLIER
     : baseSpread;
@@ -387,13 +432,39 @@ function sound(
     | "impact"
     | "reload-mg"
     | "reload-cannon"
-    | "reload-bofors",
+    | "reload-bofors"
+    | "air-warning",
   pan = 0,
 ) {
   if (!audioContext || !noiseBuffer) return;
   const ctx = audioContext;
   const clampedPan = Math.max(-1, Math.min(1, pan));
   const now = ctx.currentTime;
+
+  if (kind === "air-warning") {
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = clampedPan;
+    for (let pulse = 0; pulse < 2; pulse++) {
+      const start = now + pulse * 0.35;
+      const osc = ctx.createOscillator(),
+        gain = ctx.createGain();
+      osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(500, start);
+      osc.frequency.exponentialRampToValueAtTime(1100, start + 0.3);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.07, start + 0.04);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.3);
+      osc.connect(gain).connect(panner).connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + 0.32);
+      osc.onended = () => {
+        osc.disconnect();
+        gain.disconnect();
+        if (pulse === 1) panner.disconnect();
+      };
+    }
+    return;
+  }
 
   if (kind === "reload-mg") {
     const panner = ctx.createStereoPanner();
@@ -1041,6 +1112,8 @@ function clearRun() {
   heldKeys.clear();
   accumulator = 0;
   heavyAttackReady = 0;
+  airWarningEnemyId = null;
+  hud.setAirWarning(null);
   window.clearTimeout(bannerTimer);
   window.clearTimeout(messageTimer);
   document.querySelector("#message")!.classList.remove("show");
@@ -1092,7 +1165,7 @@ function reset() {
   endless = wave > 10;
   nextStartWave = 1;
   spawnIndex = 0;
-  spawnTimer = 2;
+  spawnTimer = spawnInterval(wave);
   intermission = 0;
   weapon = "MG";
   reload = cooldown = switchTime = 0;
@@ -1605,6 +1678,94 @@ function updateWreckages(dt: number) {
     }
   }
 }
+function addScorchMark(position: THREE.Vector3, size: number) {
+  const groundY = terrainHeight(position.x, position.z);
+  if (position.y - groundY > 2.5) return;
+  const sample = 0.75;
+  const yWest = terrainHeight(position.x - sample, position.z);
+  const yEast = terrainHeight(position.x + sample, position.z);
+  const yNorth = terrainHeight(position.x, position.z - sample);
+  const ySouth = terrainHeight(position.x, position.z + sample);
+  const normal = new THREE.Vector3(yWest - yEast, 2 * sample, 0)
+    .cross(new THREE.Vector3(0, yNorth - ySouth, 2 * sample))
+    .normalize();
+  if (normal.y < 0.1) return;
+  const material = new THREE.MeshBasicMaterial({
+    map: scorchTexture,
+    transparent: true,
+    opacity: 0.82,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  });
+  const radius = size * 1.15;
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(radius * 2, radius * 2),
+    material,
+  );
+  mesh.position.set(position.x, groundY + 0.05, position.z);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal);
+  mesh.rotateY(Math.random() * Math.PI * 2);
+  effectLayer.add(mesh);
+  scorchMarks.push({ mesh, life: 5, maxLife: 5 });
+}
+function updateScorchMarks(dt: number) {
+  for (let i = scorchMarks.length - 1; i >= 0; i--) {
+    const mark = scorchMarks[i];
+    mark.life -= dt;
+    const material = mark.mesh.material as THREE.MeshBasicMaterial;
+    material.opacity = 0.82 * Math.max(0, mark.life / mark.maxLife);
+    if (mark.life <= 0) {
+      mark.mesh.removeFromParent();
+      material.dispose();
+      mark.mesh.geometry.dispose();
+      scorchMarks.splice(i, 1);
+    }
+  }
+}
+function applyExplosionToEnemies(
+  origin: THREE.Vector3,
+  amount: number,
+  radius: number,
+  source: Weapon | "vehicle",
+  exclude?: Enemy,
+  directionHint?: THREE.Vector3,
+) {
+  if (radius <= 0 || amount <= 0) return;
+  for (const enemy of enemies) {
+    if (enemy.dead) continue;
+    if (source === "vehicle" && !isInfantryType(enemy.type)) continue;
+    targetCenter.copy(enemy.group.position);
+    if (!specs[enemy.type].air) targetCenter.y += 1.7;
+    const distance = targetCenter.distanceTo(origin);
+    if (distance >= radius) continue;
+    const blastOrigin = origin.clone();
+    if (directionHint) blastOrigin.addScaledVector(directionHint, -0.03);
+    const sightDirection = targetCenter.clone().sub(blastOrigin);
+    const sightDistance = sightDirection.length();
+    sightDirection.normalize();
+    const clearSight =
+      obstructionDistance(blastOrigin, sightDirection, sightDistance) >=
+      sightDistance;
+    const raw = splashDamage(
+      amount,
+      radius,
+      distance,
+      clearSight,
+      enemy === exclude,
+    );
+    if (raw <= 0) continue;
+    hitEnemy(
+      enemy,
+      raw,
+      source,
+      origin,
+      false,
+      source === "vehicle" ? "blast" : "splash",
+    );
+  }
+}
 function explode(
   position: THREE.Vector3,
   size: number,
@@ -1678,6 +1839,7 @@ function explode(
     size * shakeScale,
   );
   shake = Math.max(shake, shakeAmount);
+  addScorchMark(position, size);
 }
 function sparks(position: THREE.Vector3) {
   for (let i = 0; i < 3; i++)
@@ -1980,13 +2142,23 @@ function clearLineOfSight(origin: THREE.Vector3) {
 function hitEnemy(
   enemy: Enemy,
   amount: number,
-  source: Weapon,
+  source: Weapon | "vehicle",
   position: THREE.Vector3,
   headshot = false,
+  mode: "direct" | "splash" | "blast" = "direct",
 ) {
   if (enemy.dead) return;
-  const resisted = weaponEffectiveness[source][enemy.type] < 0.5;
-  const damage = resolveWeaponDamage(amount, source, enemy.type, headshot);
+  const weapon = source === "vehicle" ? "MG" : source;
+  const resisted =
+    mode === "direct" &&
+    source !== "vehicle" &&
+    weaponEffectiveness[weapon][enemy.type] < 0.5;
+  const damage =
+    mode === "blast"
+      ? amount
+      : mode === "splash"
+        ? resolveSplashDamage(amount, weapon, enemy.type)
+        : resolveWeaponDamage(amount, weapon, enemy.type, headshot);
   if (damage <= 0) return;
   enemy.hp -= damage;
   sparks(position);
@@ -2011,14 +2183,22 @@ function hitEnemy(
     createCorpse(enemy);
     infantryDeath(position, headshot);
   } else {
+    const definition = specs[enemy.type];
+    const blastOrigin = enemy.group.position.clone().add(new THREE.Vector3(0, 1, 0));
     createWreckage(enemy);
     enemy.group.removeFromParent();
-    const groundVehicle = !specs[enemy.type].air;
+    const groundVehicle = !definition.air;
     explode(
-      enemy.group.position.clone().add(new THREE.Vector3(0, 1, 0)),
-      specs[enemy.type].air ? 3.5 : 3.8,
+      blastOrigin,
+      definition.air ? 3.5 : 3.8,
       groundVehicle ? 1.15 : 1,
       groundVehicle ? "vehicle" : "default",
+    );
+    applyExplosionToEnemies(
+      blastOrigin,
+      definition.explosionDamage,
+      definition.explosionRadius,
+      "vehicle",
     );
   }
   score += specs[enemy.type].score;
@@ -2048,7 +2228,7 @@ function fire() {
     weapon === "MG" ? 0.08 : weapon === "CANNON" ? 0.15 : 0.12;
   muzzleSmoke = Math.min(1, muzzleSmoke + smokeBuildup);
   
-  // Heat rises steadily; actual cone uses an ease-in so bloom stays small at first
+  // Heat rises steadily; MG cone starts at MG_MIN_BLOOM and eases up from there
   let heatPerShot = weapon === "MG" ? 0.05 : weapon === "CANNON" ? 0.06 : 0.08;
   if (weapon === "MG") {
     const curveFactor = 0.96;
@@ -2060,7 +2240,7 @@ function fire() {
   }
   spreadHeat = Math.min(1, spreadHeat + heatPerShot);
   applyBloomSpread();
-  const bloom = bloomFromHeat(spreadHeat);
+  const bloom = bloomAmount(spreadHeat, weapon);
   const kick = (weapon === "MG" ? 0.0014 : weapon === "CANNON" ? 0.0003 : 0.0004) * (0.2 + bloom);
   const bias = spreadBiasMax[weapon];
   spreadX = THREE.MathUtils.clamp(spreadX + (Math.random() - 0.5) * kick * 2, -bias, bias);
@@ -2197,6 +2377,10 @@ function enemyAttack(enemy: Enemy) {
     projectile: grenade ? "grenade" : undefined,
     gravity: definition.bulletDrop,
     previous: mesh.position.clone(),
+    sourceBearing: bearing(
+      origin.x - playerPosition.x,
+      origin.z - playerPosition.z,
+    ),
   });
   return true;
 }
@@ -2280,8 +2464,7 @@ function updateEnemies(dt: number) {
       enemies.filter((e) => !e.dead).length <= (enemy.type === "heli" ? 27 : 28)
     ) {
       enemy.unloaded = true;
-      const infantryCount =
-        enemy.type === "heli" ? 1 + Math.floor(Math.random() * 3) : 4;
+      const infantryCount = enemy.type === "heli" ? 1 : 2;
       for (let i = 0; i < infantryCount; i++)
         spawn("infantry", position, enemy.type === "heli");
     }
@@ -2298,6 +2481,7 @@ function updateEnemies(dt: number) {
       enemy.sightTimer = 0.3;
     }
     if (!enemy.canAttack) {
+      if (airWarningEnemyId === enemy.group.id) airWarningEnemyId = null;
       enemy.warning = 0;
       enemy.burstRemaining = 0;
       enemy.fire = Math.max(enemy.fire, 0.5);
@@ -2306,6 +2490,7 @@ function updateEnemies(dt: number) {
     if (enemy.warning > 0) {
       enemy.warning -= dt;
       if (enemy.warning <= 0) {
+        if (airWarningEnemyId === enemy.group.id) airWarningEnemyId = null;
         enemyAttack(enemy);
         enemy.fire = 1 / specs[enemy.type].attackRate + Math.random() * 2;
       }
@@ -2333,17 +2518,22 @@ function updateEnemies(dt: number) {
       enemy.warning = 0.85;
       message(specs[enemy.type].name + " PREPARING TO FIRE");
       sparks(enemyOrigin(enemy));
+      if (enemy.type === "heli" || enemy.type === "aircraft") {
+        sound("air-warning");
+        airWarningEnemyId = enemy.group.id;
+      }
     } else {
       enemyAttack(enemy);
       enemy.fire = 1 / specs[enemy.type].attackRate + Math.random() * 2;
     }
   }
 }
-function hurtPlayer(amount: number) {
+function hurtPlayer(amount: number, sourceBearing?: number) {
   if (state !== "combat") return;
   if (godMode) return;
   playerHp = Math.max(0, playerHp - amount);
   hud.hurt();
+  if (sourceBearing !== undefined) hud.hitDirection(sourceBearing);
   shake = 0.14;
   sound("impact");
   message("BUNKER HIT / −" + amount + " INTEGRITY");
@@ -2389,9 +2579,12 @@ function updateShots(dt: number) {
       if (hit && shot.projectile === "grenade") {
         const distance = shot.mesh.position.distanceTo(playerPosition);
         if (distance <= shot.splash)
-          hurtPlayer(playerHit ? shot.damage : grenadeDamageAtDistance(distance));
+          hurtPlayer(
+            playerHit ? shot.damage : grenadeDamageAtDistance(distance),
+            shot.sourceBearing,
+          );
         explode(shot.mesh.position, 3.2, groundImpactVolume(distance));
-      } else if (playerHit) hurtPlayer(shot.damage);
+      } else if (playerHit) hurtPlayer(shot.damage, shot.sourceBearing);
     } else {
       let headshotHit = false;
       let proximityT = Infinity;
@@ -2472,24 +2665,14 @@ function updateShots(dt: number) {
             shot.mesh.position,
             headshotHit,
           );
-        for (const enemy of enemies) {
-          if (enemy.dead || shot.splash <= 0) continue;
-          const center = enemy.group.position.clone();
-          if (!specs[enemy.type].air) center.y += 1.7;
-          const blastDirection = center.clone().sub(shot.mesh.position);
-          const distance = blastDirection.length();
-          if (distance >= shot.splash) continue;
-          // Move off the impact surface before checking blast occlusion.
-          const blastOrigin = shot.mesh.position.clone().addScaledVector(direction, -0.03);
-          blastDirection.copy(center).sub(blastOrigin);
-          const sightDistance = blastDirection.length();
-          blastDirection.normalize();
-          const clearSight = obstructionDistance(blastOrigin, blastDirection, sightDistance) >= sightDistance;
-          const damage = splashDamage(
-            shot.explosionDamage, shot.splash, distance, clearSight, enemy === enemyHit,
-          );
-          if (damage > 0) hitEnemy(enemy, damage, shot.weapon, shot.mesh.position);
-        }
+        applyExplosionToEnemies(
+          shot.mesh.position,
+          shot.explosionDamage,
+          shot.splash,
+          shot.weapon,
+          enemyHit,
+          direction,
+        );
         if (shot.weapon === "MG") {
           ricochetSparks(shot.mesh.position);
           // Only play the ground/obstruction ricochet sound when the bullet
@@ -2529,7 +2712,7 @@ function updateShots(dt: number) {
     if (!hit && shot.life <= 0 && shot.projectile === "grenade") {
       const distance = shot.mesh.position.distanceTo(playerPosition);
       if (distance <= shot.splash)
-        hurtPlayer(grenadeDamageAtDistance(distance));
+        hurtPlayer(grenadeDamageAtDistance(distance), shot.sourceBearing);
       explode(shot.mesh.position, 3.2, groundImpactVolume(distance));
       hit = true;
     }
@@ -2542,6 +2725,7 @@ function updateShots(dt: number) {
 function updateEffects(dt: number) {
   updateWreckages(dt);
   updateCorpses(dt);
+  updateScorchMarks(dt);
   for (let i = effects.length - 1; i >= 0; i--) {
     const effect = effects[i];
     effect.life -= dt;
@@ -2609,10 +2793,18 @@ function updateEffects(dt: number) {
     flash.light.intensity = flash.baseIntensity * t * t;
   }
 }
+function spawnInterval(waveNumber: number) {
+  if (waveNumber <= 1) return 5;
+  if (waveNumber === 2) return 4.5;
+  if (waveNumber === 3) return 4;
+  const intervals = [3.6, 3.4, 3.2, 3.0, 2.8, 2.6, 2.4];
+  if (waveNumber <= 10) return intervals[waveNumber - 4];
+  return 2.2;
+}
 function beginWave() {
   state = "combat";
   spawnIndex = 0;
-  spawnTimer = 1;
+  spawnTimer = spawnInterval(wave);
   activePlan = [...wavePlans[Math.min(wave - 1, 9)]];
   if (wave > 10)
     activePlan.push(...wavePlans[8].slice(0, Math.min(8, wave - 10)));
@@ -2632,12 +2824,12 @@ function completeWave() {
   intermission = 12;
   trigger = false;
   reload = 0;
-  playerHp = Math.min(1000, playerHp + 150);
+  playerHp = Math.min(1000, playerHp + 200);
   for (const definition of Object.values(weapons)) {
     definition.reserve = Math.max(definition.reserve, definition.maxReserve);
     definition.mag = definition.maxMag;
   }
-  banner("SECTOR SECURED", "+150 INTEGRITY / AMMUNITION RESUPPLIED");
+  banner("SECTOR SECURED", "+200 INTEGRITY / AMMUNITION RESUPPLIED");
 }
 function update(dt: number) {
   if (!active()) return;
@@ -2692,7 +2884,7 @@ function update(dt: number) {
     enemies.filter((enemy) => !enemy.dead).length < 32
   ) {
     spawn(activePlan[spawnIndex++]);
-    spawnTimer = Math.max(0.8, 3 - wave * 0.1);
+    spawnTimer = spawnInterval(wave);
   }
   updateEnemies(dt);
   updateShots(dt);
@@ -2830,6 +3022,24 @@ function resume() {
 }
 function updateHud(dt: number) {
   camera.getWorldDirection(lookDirection);
+  if (airWarningEnemyId !== null) {
+    const warned = enemies.find(
+      (enemy) => !enemy.dead && enemy.group.id === airWarningEnemyId,
+    );
+    if (warned) {
+      const dx = warned.group.position.x - playerPosition.x;
+      const dz = warned.group.position.z - playerPosition.z;
+      hud.setAirWarning(
+        bearing(dx, dz),
+        warned.group.position.distanceTo(playerPosition),
+      );
+    } else {
+      airWarningEnemyId = null;
+      hud.setAirWarning(null);
+    }
+  } else {
+    hud.setAirWarning(null);
+  }
   const definition = weapons[weapon];
   hud.update(dt, {
     heading: bearing(lookDirection.x, lookDirection.z),

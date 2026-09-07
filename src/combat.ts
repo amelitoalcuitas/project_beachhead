@@ -1,4 +1,4 @@
-import { weaponEffectiveness } from "./content.ts";
+import { splashEffectiveness, weaponEffectiveness } from "./content.ts";
 import { isInfantryType, type EnemyType, type Weapon } from "./types.ts";
 
 export interface Position {
@@ -153,7 +153,7 @@ export function segmentHit(
 
 const HEADSHOT_MULTIPLIER = 2.5;
 const MG_HEADSHOT_DAMAGE = 100;
-const SPLASH_DAMAGE_SCALE = 0.65;
+export const SPLASH_DAMAGE_SCALE = 0.65;
 
 export function resolveWeaponDamage(
   amount: number,
@@ -164,6 +164,14 @@ export function resolveWeaponDamage(
   const critical = headshot && isInfantryType(target);
   const damage = critical ? (weapon === "MG" ? MG_HEADSHOT_DAMAGE : amount * HEADSHOT_MULTIPLIER) : amount;
   return damage * weaponEffectiveness[weapon][target];
+}
+
+export function resolveSplashDamage(
+  amount: number,
+  weapon: Weapon,
+  target: EnemyType,
+) {
+  return amount * splashEffectiveness[weapon][target];
 }
 
 export function splashDamage(
@@ -238,6 +246,6 @@ export function enemyProjectileDamage(definition: {
   burst?: { count: number };
 }) {
   return definition.grenade
-    ? definition.explosionDamage
+    ? GRENADE_DAMAGE
     : definition.attack * 3 / (definition.burst?.count ?? 1);
 }

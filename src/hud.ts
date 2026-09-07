@@ -47,7 +47,7 @@ export const screenMarkup = `
   <section class="compass" aria-label="Horizontal enemy compass"><div class="compass-meta"><span>TACTICAL BEARING</span><b id="heading">000° N</b><span><i class="red-dot"></i> HOSTILES</span></div><div class="compass-window" id="compassTrack"><div id="ticks"></div><div id="pins"></div><div class="heading-needle"></div></div><div class="compass-baseline"></div></section>
   <section class="score-block"><span class="eyebrow">MISSION SCORE</span><strong id="score">000000</strong><small>WAVE <b id="wave">01</b> <span>/</span> CONTACTS <b id="threats">00</b></small></section>
   <aside class="objective"><span class="eyebrow">PRIMARY OBJECTIVE</span><p>HOLD THE BEACHHEAD</p><div id="objectiveDetail">Watch the shoreline. Hold your position.</div></aside>
-  <div class="reticle" id="reticle"><i></i><i></i><i></i><i></i><b></b></div><div id="hitMarker">×</div>
+  <div class="reticle" id="reticle"><i></i><i></i><i></i><i></i><b></b></div><div id="hitMarker">×</div><div id="directionRing" aria-hidden="true"></div><div id="airWarningLabel" hidden></div>
   <div id="targetInfo" class="target-info"></div><div class="message" id="message"></div><div class="wave-banner" id="banner"></div><div id="bottomPrompt" class="bottom-prompt"><span id="bottomPromptLabel"></span><div class="bottom-progress"><div id="bottomProgressFill"></div></div></div>
   <section class="health-block panel"><div class="panel-heading"><span>◆ BUNKER INTEGRITY</span><b id="integrityState">OPERATIONAL</b></div><div class="health-number"><strong id="hp">1000</strong><span>/ 1000</span></div><div class="bar"><div class="fill" id="hpFill"></div></div><div class="radar-row"><div class="radar" role="img" aria-label="Proximity scanner: forward is up, 200 meter radius, hollow markers are beyond range"><div id="radarRings"></div><div class="radar-sweep"></div><div id="radarNorth" class="radar-north">N</div><div class="radar-self">▲</div><div id="radarContacts"></div></div><div class="radar-caption"><span class="eyebrow">PROXIMITY SCAN</span><b id="closest">NO CONTACT</b><small>Rings: ${RADAR_RING_INTERVAL_METERS} m · radius: ${RADAR_RANGE_METERS} m</small><small id="radarDistant">No distant contacts</small></div></div></section>
   <nav class="loadout" aria-label="Weapons"><button data-weapon="MG" class="selected" title="${weaponRoles.MG}"><kbd>1</kbd><span>BROWNING</span><small>.30 CAL</small></button><button data-weapon="CANNON" title="${weaponRoles.CANNON}"><kbd>2</kbd><span>AT GUN</span><small>57 MM</small></button><button data-weapon="BOFORS" title="${weaponRoles.BOFORS}"><kbd>3</kbd><span>BOFORS</span><small>40 MM · AA</small></button></nav>
@@ -92,6 +92,8 @@ export class CombatHud {
   private damageTime = 0;
   private hitTime = 0;
   private currentSpread = 0;
+  private hitIndicators: { bearing: number; life: number }[] = [];
+  private airWarning: { bearing: number; distance: number } | null = null;
   private camera: THREE.PerspectiveCamera;
   constructor(camera: THREE.PerspectiveCamera) {
     this.camera = camera;
@@ -134,6 +136,14 @@ export class CombatHud {
   }
   hurt() {
     this.damageTime = 0.65;
+  }
+  hitDirection(sourceBearing: number) {
+    this.hitIndicators.push({ bearing: sourceBearing, life: 0.9 });
+    if (this.hitIndicators.length > 4) this.hitIndicators.shift();
+  }
+  setAirWarning(bearing: number | null, distance = 0) {
+    this.airWarning =
+      bearing === null ? null : { bearing, distance };
   }
   update(dt: number, s: HudSnapshot) {
     const active = s.state !== "title";
@@ -289,6 +299,10 @@ export class CombatHud {
     }
     this.damageTime = Math.max(0, this.damageTime - dt);
     this.hitTime = Math.max(0, this.hitTime - dt);
+    this.hitIndicators = this.hitIndicators
+      .map((indicator) => ({ ...indicator, life: indicator.life - dt }))
+      .filter((indicator) => indicator.life > 0);
+    this.renderDirectionRing(s.heading);
     this.el("damageVeil").style.opacity = String(this.damageTime);
     this.el("hitMarker").style.opacity = this.hitTime > 0 ? "1" : "0";
     this.el("reticle").classList.toggle("zoom", s.zoom);
@@ -302,6 +316,34 @@ export class CombatHud {
     const size = THREE.MathUtils.clamp(range.min + spreadPx, range.min, range.max);
     this.updateCrosshairSpread(size);
   }
+  private renderDirectionRing(heading: number) {
+    const ring = this.el("directionRing");
+    ring.replaceChildren();
+    const label = this.el("airWarningLabel");
+    if (this.airWarning) {
+      const delta = bearingDelta(this.airWarning.bearing, heading);
+      const air = document.createElement("span");
+      air.className = "air-arrow";
+      air.style.transform = `rotate(${delta}deg) translateY(-92px)`;
+      air.textContent = "▲";
+      ring.append(air);
+      label.hidden = false;
+      label.textContent = `INCOMING AIR · ${Math.round(this.airWarning.distance)} M`;
+      label.style.transform = `translate(-50%, -50%) rotate(${delta}deg) translateY(-118px)`;
+    } else {
+      label.hidden = true;
+      label.textContent = "";
+    }
+    for (const indicator of this.hitIndicators) {
+      const arrow = document.createElement("span");
+      arrow.className = "hit-arrow";
+      const delta = bearingDelta(indicator.bearing, heading);
+      arrow.style.transform = `rotate(${delta}deg) translateY(-78px)`;
+      arrow.style.opacity = String(Math.min(1, indicator.life / 0.35));
+      arrow.textContent = "▲";
+      ring.append(arrow);
+    }
+  }
   // Base/max on-screen size (px) of the reticle per weapon, so heavy weapons
   // keep a clean, readable shape instead of collapsing to the spread floor.
   private static readonly reticleRange: Record<Weapon, { min: number; max: number }> = {
@@ -313,27 +355,7 @@ export class CombatHud {
     const reticle = this.el("reticle");
     reticle.style.width = `${size}px`;
     reticle.style.height = `${size}px`;
-    // Keep each tick centered on its cross-axis as the box resizes
-    const half = `${size / 2 - 0.5}px`;
-    const arms = reticle.querySelectorAll<HTMLElement>("i");
-    arms.forEach((arm, i) => {
-      if (i === 0) {
-        arm.style.top = "0";
-        arm.style.left = half;
-      }
-      if (i === 1) {
-        arm.style.bottom = "0";
-        arm.style.left = half;
-      }
-      if (i === 2) {
-        arm.style.left = "0";
-        arm.style.top = half;
-      }
-      if (i === 3) {
-        arm.style.right = "0";
-        arm.style.top = half;
-      }
-    });
-    // Center dot centering is handled entirely in CSS (left/top 50% + margin).
+    // Tick and dot alignment are handled in CSS via 50% + translate so border-box
+    // borders do not offset the reticle center.
   }
 }
