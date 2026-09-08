@@ -1,4 +1,5 @@
 import * as pc from "playcanvas";
+import { cannonImpactProfile, type CannonImpactContext, type ImpactMaterial } from "./impact-profile.ts";
 import { getActiveApp, WEAPON_OVERLAY_LAYER_ID } from "../pc-shim/index.ts";
 import { terrainHeight } from "./battlefield.ts";
 import type { EnemyType, Weapon } from "../types.ts";
@@ -11,6 +12,7 @@ export type MgImpactSurface = "terrain" | "armor" | "infantry";
 const MAX_FLASHES = 18;
 const MAX_SMOKE_BURSTS = 28;
 const MAX_CANNON_MARKS = 36;
+const MAX_CANNON_IMPACTS = 16;
 export const CANNON_MARK_LIFETIME = 15;
 
 export function cannonMarkOpacity(life: number, maxOpacity = 0.56) {
@@ -32,6 +34,26 @@ export function mgImpactSurface(enemyType?: EnemyType): MgImpactSurface {
 interface FlashSlot { root: pc.Entity; core: pc.Entity; spike: pc.Entity; light: pc.Entity; layerId: number; life: number; maxLife: number; lightIntensity: number; }
 interface SmokeSlot { entity: pc.Entity; life: number; }
 interface MarkSlot { entity: pc.Entity; mesh: pc.Mesh; material: pc.StandardMaterial; life: number; maxOpacity: number; }
+interface CannonImpactSlot {
+  root: pc.Entity;
+  core: pc.Entity;
+  ring: pc.Entity;
+  shards: pc.Entity[];
+  shardDirections: pc.Vec3[];
+  smokePuffs: pc.Entity[];
+  smokeDirections: pc.Vec3[];
+  smokeVariations: pc.Vec3[];
+  shardVariations: pc.Vec3[];
+  material: ImpactMaterial;
+  localUp: pc.Vec3;
+  rays: pc.Entity[];
+  rayDirections: pc.Vec3[];
+  light: pc.Entity;
+  life: number;
+  maxLife: number;
+  size: number;
+  lightIntensity: number;
+}
 
 /**
  * Direct PlayCanvas rendering for the high-frequency weapon effects. It is
@@ -44,6 +66,7 @@ export class GunEffectsSystem {
   private readonly flashes: FlashSlot[] = [];
   private readonly smoke: SmokeSlot[] = [];
   private readonly marks: MarkSlot[] = [];
+  private readonly cannonImpacts: CannonImpactSlot[] = [];
   private smokeTexture?: pc.Texture;
   private flashTexture?: pc.Texture;
 
@@ -101,6 +124,88 @@ export class GunEffectsSystem {
     this.emitImpactFlash(vec(position), surface === "armor" ? 0xffdd8a : 0xd6a35a, surface === "armor" ? 0.18 : 0.11);
   }
 
+  emitCannonImpact(position: Position, weapon: Extract<Weapon, "CANNON" | "BOFORS">, context?: CannonImpactContext) {
+    if (!this.ensureReady()) return;
+    const slot = this.acquireCannonImpact();
+    const size = (weapon === "CANNON" ? 3.5 : 2.2) * (0.9 + Math.random() * 0.2);
+    slot.material = context?.material ?? "sand";
+    const profile = cannonImpactProfile(slot.material);
+    const normal = context ? normalized(context.normal) : terrainNormal(position.x, position.z);
+    const incoming = context ? normalized(context.incoming) : normal.clone().mulScalar(-1);
+    if (normal.dot(incoming) > 0) normal.mulScalar(-1);
+    const orientation = new pc.Quat().setFromDirections(pc.Vec3.UP, normal);
+    slot.root.setRotation(orientation);
+    const inverseOrientation = orientation.clone().invert();
+    inverseOrientation.transformVector(pc.Vec3.UP, slot.localUp);
+    const localIncoming = inverseOrientation.transformVector(incoming);
+    const color = weapon === "CANNON" ? 0xffd34b : 0xffdc7a;
+    slot.root.enabled = true;
+    slot.root.setPosition(vec(position));
+    slot.core.setLocalPosition(0, 0.12, 0);
+    slot.core.setLocalScale(size * 0.32, 1, size * 0.32);
+    slot.ring.enabled = slot.material === "sand";
+    slot.ring.setLocalPosition(0, 0.12, 0);
+    slot.ring.setLocalScale(size * 0.18, size * 0.18, size * 0.18);
+    slot.ring.setLocalEulerAngles(0, 0, 0);
+    setMaterialColor(slot.core, color, 1);
+    setEntityOpacity(slot.ring, 0);
+    for (const [index, shard] of slot.shards.entries()) {
+      const angle = (index / slot.shards.length) * Math.PI * 2 + Math.random() * 0.45;
+      const direction = slot.shardDirections[index].set(
+        Math.cos(angle) * (0.35 + Math.random() * 0.6) + localIncoming.x * 0.3,
+        0.65 + Math.random() * 0.45,
+        Math.sin(angle) * (0.35 + Math.random() * 0.6) + localIncoming.z * 0.3,
+      );
+      shard.enabled = true;
+      shard.setLocalPosition(
+        direction.x * size * 0.08,
+        size * (0.1 + Math.random() * 0.1),
+        direction.z * size * 0.08,
+      );
+      shard.setLocalEulerAngles(
+        -35 - Math.random() * 55,
+        Math.random() * 360,
+        (Math.random() - 0.5) * 35,
+      );
+      shard.setLocalScale(size * 0.08, size * 0.18, size * 0.08);
+      const shardMaterial = shard.render!.meshInstances[0].material as pc.StandardMaterial;
+      shardMaterial.diffuse.copy(hexColor(profile.debrisColor));
+      shardMaterial.emissive.copy(hexColor(profile.debrisColor).mulScalar(0.12));
+      shardMaterial.opacity = 1;
+      shardMaterial.update();
+      slot.shardVariations[index].set(0.65 + Math.random() * 0.8, 0.75 + Math.random() * 0.6, Math.random() * 360);
+    }
+    // Sample once per shot so pooled effects vary without jittering between frames.
+    for (const [index, direction] of slot.smokeDirections.entries()) {
+      if (index < slot.shards.length) {
+        direction.copy(slot.shardDirections[index]);
+      } else {
+        const angle = Math.random() * Math.PI * 2;
+        direction.set(Math.cos(angle) * 0.18 + localIncoming.x * 0.12, 1.4 + Math.random() * 0.65, Math.sin(angle) * 0.18 + localIncoming.z * 0.12);
+      }
+    }
+    for (const variation of slot.smokeVariations) {
+      variation.set(0.8 + Math.random() * 0.4, 0.8 + Math.random() * 0.4, Math.random() * Math.PI * 2);
+    }
+    for (const [index, ray] of slot.rays.entries()) {
+      const angle = (index / slot.rays.length) * Math.PI * 2 + Math.random() * 0.22;
+      const direction = slot.rayDirections[index].set(Math.cos(angle), 0.4 + Math.random() * 0.42, Math.sin(angle)).normalize().mulScalar(0.65 + Math.random() * 0.7);
+      ray.enabled = true;
+      ray.setLocalPosition(0, size * 0.13, 0);
+      ray.setLocalRotation(new pc.Quat().setFromDirections(pc.Vec3.UP, direction.clone().normalize()));
+      ray.setLocalScale(size * 0.12, size * (0.65 + Math.random() * 0.65), size * 0.12);
+      setMaterialColor(ray, index % 3 ? 0xff7020 : 0xffed36, 0.9);
+    }
+    slot.light.light!.color = hexColor(color);
+    slot.light.light!.range = size * 5.5;
+    slot.light.light!.intensity = profile.lightIntensity * (weapon === "CANNON" ? 1 : 0.7) * (0.85 + Math.random() * 0.3);
+    slot.life = slot.maxLife = profile.lifetime * (weapon === "CANNON" ? 1 : 0.85) * (0.94 + Math.random() * 0.12);
+    for (const puff of slot.smokePuffs) setEntityOpacity(puff, 0);
+    slot.size = size;
+    slot.lightIntensity = slot.light.light!.intensity;
+
+  }
+
   addCannonImpactMark(position: Position, weapon: Weapon) {
     if (!this.ensureReady() || !cannonImpactMarkApplies(weapon, position)) return;
     const slot = this.acquireMark();
@@ -131,6 +236,84 @@ export class GunEffectsSystem {
       flash.light.light!.intensity = flash.lightIntensity * afterglow;
       if (flash.life <= 0) flash.root.enabled = false;
     }
+    for (const impact of this.cannonImpacts) {
+      if (impact.life <= 0) continue;
+      impact.life -= dt;
+      const age = impact.maxLife - impact.life;
+      const profile = cannonImpactProfile(impact.material);
+      const fade = Math.min(1, Math.max(0, impact.life) / 0.4);
+      const expansion = 1 - Math.exp(-age * 24);
+      const flash = Math.exp(-age * 16);
+      const fire = Math.max(0, 1 - age / profile.fireDuration);
+      const coreSize = impact.size * profile.fireScale * (0.1 + expansion * 0.4);
+      impact.core.setLocalScale(coreSize, coreSize * 0.65, coreSize);
+      impact.core.setLocalPosition(0, coreSize * 0.2, 0);
+      setMaterialColor(impact.core, age < 0.055 ? 0xfff3b0 : 0xff7018, fire * fire * 0.65);
+      const shockProgress = Math.min(1, age / 0.48);
+      const shockSize = impact.size * (0.3 + (1 - (1 - shockProgress) ** 2) * 4);
+      impact.ring.setLocalScale(shockSize, impact.size * 0.35, shockSize);
+      setEntityOpacity(impact.ring, Math.min(1, age / 0.025) * (1 - shockProgress) ** 1.5 * 0.65);
+      for (const [index, shard] of impact.shards.entries()) {
+        const direction = impact.shardDirections[index];
+        const variation = impact.shardVariations[index];
+        const distance = (1 - Math.exp(-age * 1.8)) / 1.8 * variation.y;
+        const radius = impact.size * 0.05 * variation.x;
+        shard.setLocalScale(radius, radius * (impact.material === "wood" ? 3.4 : 1.3), radius * 0.8);
+        const localPosition = direction.clone().mulScalar(impact.size * distance * 3.2);
+        localPosition.y += 0.1;
+        localPosition.add(impact.localUp.clone().mulScalar(-4.9 * age * age));
+        const worldPosition = impact.root.getRotation().transformVector(localPosition).add(impact.root.getPosition());
+        const ground = terrainHeight(worldPosition.x, worldPosition.z) + radius * 0.4;
+        worldPosition.y = Math.max(ground, worldPosition.y);
+        shard.setPosition(worldPosition);
+        shard.setLocalEulerAngles(variation.z + age * 420 * variation.y, variation.z, age * 310);
+        setEntityOpacity(shard, fade);
+      }
+      // Stagger puffs along fast ejecta jets, then let them swell and drift independently.
+      for (const [index, puff] of impact.smokePuffs.entries()) {
+        const jet = Math.floor(index / 6);
+        const direction = impact.smokeDirections[jet];
+        const variation = impact.smokeVariations[index];
+        const isCentral = jet >= impact.shards.length;
+        const step = index % 6;
+        const along = (step + 1) / 6;
+        const puffAge = Math.max(0, age - step * 0.012 * variation.y);
+        const spread = (1 - Math.exp(-puffAge * (12 - along * 4) * variation.y)) * along;
+        const drift = puffAge * puffAge;
+        const radius = impact.size * variation.x * (isCentral ? 1.65 : 1) * (0.19 - along * 0.09 + puffAge * (0.17 - along * 0.06));
+        puff.setLocalPosition(
+          direction.x * impact.size * spread * profile.plumeWidth + Math.sin(variation.z) * drift * 0.35 + impact.localUp.x * puffAge * 0.8,
+          impact.size * (0.08 + direction.y * spread * profile.plumeHeight + impact.localUp.y * puffAge * 0.18),
+          direction.z * impact.size * spread * profile.plumeWidth + Math.cos(variation.z) * drift * 0.35 + impact.localUp.z * puffAge * 0.8,
+        );
+        puff.setLocalScale(radius * (1.15 + Math.sin(index) * 0.15), radius, radius);
+        puff.setLocalEulerAngles(index * 53 + puffAge * 16, index * 71, puffAge * 12);
+        const material = puff.render!.meshInstances[0].material as pc.StandardMaterial;
+        const heat = (impact.material !== "sand" || !isCentral) && step < 3 ? Math.max(0, 1 - age / profile.fireDuration) : 0;
+        const shade = (isCentral ? 0.7 : 0.95) * variation.x + Math.min(0.12, age * 0.08);
+        material.diffuse.copy(hexColor(profile.dustColor).mulScalar(shade));
+        material.emissive.copy(material.diffuse).mulScalar(0.18);
+        material.emissive.r += heat * 1.2;
+        material.emissive.g += heat * heat * 0.5;
+        material.opacity = Math.min(1, puffAge * 45) * fade * 0.88;
+        material.update();
+      }
+      for (const [index, ray] of impact.rays.entries()) {
+        const direction = impact.rayDirections[index];
+        const length = impact.size * profile.fireScale * expansion * direction.length();
+        const sandJet = impact.material === "sand";
+        const jetFade = Math.max(0, 1 - age / 0.48);
+        const width = impact.size * profile.fireScale * (0.08 + (index % 3) * 0.025) * (sandJet ? jetFade : fire);
+        ray.setLocalScale(width, length * (sandJet ? 1.65 : 1), width);
+        const center = direction.clone().normalize().mulScalar(length * 0.48);
+        ray.setLocalPosition(center.x, center.y + 0.08, center.z);
+        const rayMaterial = ray.render!.meshInstances[0].material as pc.StandardMaterial;
+        rayMaterial.blendType = sandJet && age > 0.08 ? pc.BLEND_NORMAL : pc.BLEND_ADDITIVE;
+        setMaterialColor(ray, sandJet && age > 0.08 ? profile.dustColor : index % 3 ? 0xff7822 : 0xffde69, sandJet ? jetFade * jetFade : fire * fire);
+      }
+      impact.light.light!.intensity = impact.lightIntensity * flash;
+      if (impact.life <= 0) impact.root.enabled = false;
+    }
     for (const burst of this.smoke) {
       if (burst.life <= 0) continue;
       burst.life -= dt;
@@ -153,7 +336,15 @@ export class GunEffectsSystem {
     }
     for (const burst of this.smoke) { burst.entity.destroy(); }
     for (const mark of this.marks) { mark.entity.destroy(); mark.mesh.destroy(); mark.material.destroy(); }
-    this.flashes.length = this.smoke.length = this.marks.length = 0;
+    for (const impact of this.cannonImpacts) {
+      destroyRenderResources(impact.core);
+      destroyRenderResources(impact.ring);
+      for (const shard of impact.shards) destroyRenderResources(shard);
+      for (const puff of impact.smokePuffs) destroyRenderResources(puff);
+      for (const ray of impact.rays) destroyRenderResources(ray);
+      impact.root.destroy();
+    }
+    this.flashes.length = this.smoke.length = this.marks.length = this.cannonImpacts.length = 0;
     this.smokeTexture?.destroy();
     this.flashTexture?.destroy();
     this.smokeTexture = undefined;
@@ -191,6 +382,30 @@ export class GunEffectsSystem {
     return slot;
   }
 
+  private acquireCannonImpact() {
+    const available = this.cannonImpacts.find((slot) => slot.life <= 0) ??
+      (this.cannonImpacts.length >= MAX_CANNON_IMPACTS ? this.cannonImpacts[0] : undefined);
+    if (available) return available;
+    const root = new pc.Entity("cannon-impact");
+    const core = makeImpactOrb();
+    const ring = makeImpactShockwave();
+    const shards = Array.from({ length: 10 }, () => makeImpactShard());
+    const shardDirections = shards.map(() => new pc.Vec3());
+    const shardVariations = shards.map(() => new pc.Vec3());
+    const smokeDirections = Array.from({ length: shards.length + 3 }, () => new pc.Vec3());
+    const smokeVariations = Array.from({ length: smokeDirections.length * 6 }, () => new pc.Vec3());
+    const smokePuffs = Array.from({ length: smokeDirections.length * 6 }, (_, index) => makeImpactOrb(true, index));
+    smokePuffs.forEach((puff) => root.addChild(puff));
+    const rays = Array.from({ length: 18 }, () => makeImpactRay());
+    const rayDirections = rays.map(() => new pc.Vec3());
+    const light = new pc.Entity("cannon-impact-light");
+    light.addComponent("light", { type: "omni", intensity: 0, range: 16, layers: [pc.LAYERID_WORLD] });
+    root.addChild(core); root.addChild(ring); shards.forEach((shard) => root.addChild(shard)); rays.forEach((ray) => root.addChild(ray)); root.addChild(light); this.root!.addChild(root);
+    const slot = { root, core, ring, shards, shardDirections, shardVariations, material: "sand" as ImpactMaterial, localUp: new pc.Vec3(0, 1, 0), smokePuffs, smokeDirections, smokeVariations, rays, rayDirections, light, life: 0, maxLife: 0, size: 0, lightIntensity: 0 };
+    this.cannonImpacts.push(slot);
+    return slot;
+  }
+
   private emitImpactFlash(position: pc.Vec3, color: number, size: number) {
     const slot = this.acquireFlash();
     slot.root.enabled = true;
@@ -204,7 +419,7 @@ export class GunEffectsSystem {
   }
 
   private emitSmoke(position: pc.Vec3, direction: pc.Vec3, weapon: Weapon, kind: SmokeKind) {
-    const slot = this.acquireSmoke(kind);
+    const slot = this.acquireSmoke(weapon, kind);
     const profile = smokeProfile(weapon, kind);
     slot.entity.enabled = true;
     slot.entity.setPosition(position);
@@ -218,11 +433,11 @@ export class GunEffectsSystem {
     slot.entity.lookAt(position.clone().add(direction));
   }
 
-  private acquireSmoke(kind: SmokeKind) {
+  private acquireSmoke(weapon: Weapon, kind: SmokeKind) {
     const available = this.smoke.find((slot) => slot.life <= 0) ?? (this.smoke.length >= MAX_SMOKE_BURSTS ? this.smoke.shift() : undefined);
     if (available) { if (!this.smoke.includes(available)) this.smoke.push(available); return available; }
     const entity = new pc.Entity(`gun-smoke-${kind}`);
-    const profile = smokeProfile("MG", kind);
+    const profile = smokeProfile(weapon, kind);
     entity.addComponent("particlesystem", particleOptions(this.smokeTexture!, profile));
     this.root!.addChild(entity);
     const slot = { entity, life: 0 }; this.smoke.push(slot); return slot;
@@ -244,7 +459,7 @@ export class GunEffectsSystem {
   }
 }
 
-type SmokeKind = "shot" | "tank" | "residual" | "impact-dirt" | "impact-armor" | "impact-light";
+type SmokeKind = "shot" | "tank" | "residual" | "explosion" | "impact-dirt" | "impact-armor" | "impact-light";
 export function muzzleProfile(weapon: Weapon, actor: "player" | "tank" = "player") {
   // These are deliberately visible at the player's weapon scale. The weapon
   // view's muzzle mesh is only an anchor; the native overlay renders the flash.
@@ -257,6 +472,7 @@ function smokeProfile(weapon: Weapon, kind: SmokeKind) {
   if (kind === "impact-dirt") return { count: 7, life: 0.48, speed: 0.7, spread: 0.16, color: new pc.Color(0.42, 0.31, 0.2) };
   if (kind === "impact-armor") return { count: 5, life: 0.36, speed: 1.1, spread: 0.1, color: new pc.Color(0.3, 0.31, 0.31) };
   if (kind === "impact-light") return { count: 2, life: 0.25, speed: 0.25, spread: 0.05, color: new pc.Color(0.5, 0.42, 0.34) };
+  if (kind === "explosion") return { count: weapon === "CANNON" ? 16 : 10, life: weapon === "CANNON" ? 1.55 : 1.2, speed: weapon === "CANNON" ? 1.65 : 1.25, spread: weapon === "CANNON" ? 0.34 : 0.26, color: new pc.Color(0.22, 0.23, 0.24) };
   if (kind === "residual") return { count: 3, life: 0.8, speed: 0.15, spread: 0.05, color: new pc.Color(0.45, 0.45, 0.42) };
   const heavy = weapon !== "MG" || kind === "tank";
   return { count: heavy ? 7 : 3, life: heavy ? 0.9 : 0.48, speed: heavy ? 0.85 : 0.45, spread: heavy ? 0.12 : 0.045, color: heavy ? new pc.Color(0.42, 0.4, 0.36) : new pc.Color(0.52, 0.5, 0.45) };
@@ -290,6 +506,62 @@ function makeFlashCone(layerId: number) {
   const meshInstance = new pc.MeshInstance(mesh, material, entity);
   meshInstance.castShadow = false; meshInstance.receiveShadow = false;
   entity.addComponent("render", { meshInstances: [meshInstance], layers: [layerId] }); return entity;
+}
+function makeImpactShockwave() {
+  const entity = new pc.Entity("cannon-impact-shockwave");
+  const material = new pc.StandardMaterial();
+  material.diffuse = new pc.Color(0.72, 0.57, 0.36);
+  material.emissive = new pc.Color(0.2, 0.15, 0.08);
+  material.blendType = pc.BLEND_NORMAL;
+  material.opacity = 0;
+  material.depthWrite = false;
+  material.cull = pc.CULLFACE_NONE;
+  material.update();
+  const mesh = pc.Mesh.fromGeometry(getActiveApp()!.graphicsDevice, new pc.TorusGeometry({
+    ringRadius: 0.5, tubeRadius: 0.022, segments: 64, sides: 6,
+  }));
+  const meshInstance = new pc.MeshInstance(mesh, material, entity);
+  meshInstance.castShadow = false;
+  meshInstance.receiveShadow = false;
+  entity.addComponent("render", { meshInstances: [meshInstance], layers: [pc.LAYERID_WORLD] });
+  return entity;
+}
+
+function makeImpactOrb(isSmoke = false, shadeIndex = 0) {
+  const entity = new pc.Entity("cannon-impact-orb"); const material = new pc.StandardMaterial();
+  material.diffuse = new pc.Color(0, 0, 0); material.emissive = new pc.Color(0.95, 0.72, 0.3);
+  material.opacity = 0.95; material.blendType = pc.BLEND_ADDITIVE; material.depthWrite = false; material.cull = pc.CULLFACE_NONE; material.update();
+  if (isSmoke) {
+    const shade = 0.12 + (shadeIndex % 5) * 0.035;
+    entity.name = "cannon-impact-smoke";
+    material.diffuse = new pc.Color(shade, shade * 1.06, shade * 1.12);
+    material.emissive = new pc.Color(shade * 0.3, shade * 0.32, shade * 0.35);
+    material.blendType = pc.BLEND_NORMAL;
+    material.opacity = 0;
+    material.update();
+  }
+  const mesh = pc.Mesh.fromGeometry(getActiveApp()!.graphicsDevice, new pc.SphereGeometry({ radius: 0.5, latitudeBands: 5, longitudeBands: 7 }));
+  const meshInstance = new pc.MeshInstance(mesh, material, entity);
+  meshInstance.castShadow = false; meshInstance.receiveShadow = false;
+  entity.addComponent("render", { meshInstances: [meshInstance], layers: [pc.LAYERID_WORLD] }); return entity;
+}
+function makeImpactShard() {
+  const entity = new pc.Entity("cannon-impact-shard"); const material = new pc.StandardMaterial();
+  material.diffuse = new pc.Color(0.12, 0.13, 0.15); material.emissive = new pc.Color(0.08, 0.09, 0.1);
+  material.opacity = 0.88; material.blendType = pc.BLEND_NORMAL; material.depthWrite = false; material.cull = pc.CULLFACE_NONE; material.update();
+  const mesh = pc.Mesh.fromGeometry(getActiveApp()!.graphicsDevice, new pc.SphereGeometry({ radius: 0.5, latitudeBands: 3, longitudeBands: 5 }));
+  const meshInstance = new pc.MeshInstance(mesh, material, entity);
+  meshInstance.castShadow = false; meshInstance.receiveShadow = false;
+  entity.addComponent("render", { meshInstances: [meshInstance], layers: [pc.LAYERID_WORLD] }); return entity;
+}
+function makeImpactRay() {
+  const entity = new pc.Entity("cannon-impact-ray"); const material = new pc.StandardMaterial();
+  material.diffuse = new pc.Color(0, 0, 0); material.emissive = new pc.Color(0.9, 0.38, 0.08);
+  material.opacity = 0.9; material.blendType = pc.BLEND_ADDITIVE; material.depthWrite = false; material.cull = pc.CULLFACE_NONE; material.update();
+  const mesh = pc.Mesh.fromGeometry(getActiveApp()!.graphicsDevice, new pc.ConeGeometry({ baseRadius: 0.5, peakRadius: 0, height: 1, heightSegments: 1, capSegments: 5 }));
+  const meshInstance = new pc.MeshInstance(mesh, material, entity);
+  meshInstance.castShadow = false; meshInstance.receiveShadow = false;
+  entity.addComponent("render", { meshInstances: [meshInstance], layers: [pc.LAYERID_WORLD] }); return entity;
 }
 function destroyRenderResources(entity: pc.Entity) {
   for (const meshInstance of entity.render?.meshInstances ?? []) {

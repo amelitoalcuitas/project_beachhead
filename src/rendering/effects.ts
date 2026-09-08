@@ -607,6 +607,17 @@ export class EffectsSystem {
   this.deps.effectLayer.add(mesh);
   this.scorchMarks.push({ mesh, life: 5, maxLife: 5 });
   }
+  explosionFeedback(position: THREE.Vector3, size: number, soundVolume = 1) {
+  this.deps.audio.explosionSound(this.deps.muzzlePan(position), size, soundVolume);
+  const distance = position.distanceTo(this.deps.playerPosition);
+  const shakeAmount = THREE.MathUtils.clamp(
+    size * 0.05 * (1 - distance / (size * 12)),
+    0,
+    size * 0.05,
+  );
+  this.deps.addShake(shakeAmount);
+  this.addScorchMark(position, size);
+  }
   updateScorchMarks(dt: number) {
   for (let i = this.scorchMarks.length - 1; i >= 0; i--) {
     const mark = this.scorchMarks[i];

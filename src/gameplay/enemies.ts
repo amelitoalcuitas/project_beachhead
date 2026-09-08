@@ -185,6 +185,9 @@ export class EnemySystem {
   direction: THREE.Vector3,
   distance: number,
   ) {
+  return this.obstructionImpact(origin, direction, distance)?.distance ?? Infinity;
+  }
+  obstructionImpact(origin: THREE.Vector3, direction: THREE.Vector3, distance: number) {
   const ground = terrainIntersection(
     origin,
     direction,
@@ -197,7 +200,17 @@ export class EnemySystem {
     this.deps.battlefield.occluders.slice(1),
     true,
   )[0];
-  return Math.min(ground, hit?.distance ?? Infinity);
+  if (hit && hit.distance < ground) {
+    let material = "masonry";
+    for (let node = hit.object; node; node = node.parent) {
+      if (node.userData.impactMaterial) { material = node.userData.impactMaterial; break; }
+    }
+    return { distance: hit.distance, normal: hit.normal, material: material as "masonry" | "wood" | "metal" };
+  }
+  if (!Number.isFinite(ground)) return null;
+  const point = origin.clone().addScaledVector(direction, ground);
+  const normal = new THREE.Vector3(terrainHeight(point.x - 0.75, point.z) - terrainHeight(point.x + 0.75, point.z), 1.5, terrainHeight(point.x, point.z - 0.75) - terrainHeight(point.x, point.z + 0.75)).normalize();
+  return { distance: ground, normal, material: "sand" as const };
   }
   enemyOrigin(enemy: Enemy) {
   return enemy.group.position

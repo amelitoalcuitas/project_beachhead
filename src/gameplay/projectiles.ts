@@ -63,7 +63,8 @@ export class ProjectileSystem {
       length = step.length(),
       direction = step.clone().normalize();
     const enemies = this.deps.enemies!;
-    const obstruction = enemies.obstructionDistance(shot.previous, direction, length);
+    const obstructionHit = enemies.obstructionImpact(shot.previous, direction, length);
+    const obstruction = obstructionHit?.distance ?? Infinity;
     if (obstruction <= length) {
       bestT = obstruction / length;
       hit = true;
@@ -196,13 +197,20 @@ export class ProjectileSystem {
             : groundImpactVolume(
                 shot.mesh.position.distanceTo(this.deps.playerPosition),
               );
-          this.deps.effects.explode(
+          const impactSize = shot.weapon === "BOFORS" ? 2 : 3.2;
+          const material = impact?.kind === "proximity" ? "air" : enemyHit
+            ? isInfantryType(enemyHit.type) ? "organic" : "metal"
+            : obstructionHit?.material ?? "sand";
+          const normal = enemyHit
+            ? shot.mesh.position.clone().sub(enemyHit.group.position.clone().add(new THREE.Vector3(0, specs[enemyHit.type].air ? 0 : headshotHit ? 3.15 : 1.7, 0))).normalize()
+            : obstructionHit?.normal ?? direction.clone().multiplyScalar(-1);
+          this.deps.gunEffects?.emitCannonImpact(shot.mesh.position, shot.weapon, { material, normal, incoming: direction });
+          this.deps.effects.explosionFeedback(
             shot.mesh.position,
-            shot.weapon === "BOFORS" ? 2 : 3.2,
+            impactSize,
             impactVolume,
-            shot.weapon === "BOFORS" ? "flak" : "he",
           );
-          this.deps.gunEffects?.addCannonImpactMark(shot.mesh.position, shot.weapon);
+          if (material === "sand") this.deps.gunEffects?.addCannonImpactMark(shot.mesh.position, shot.weapon);
         }
       }
     }

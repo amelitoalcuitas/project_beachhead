@@ -170,6 +170,7 @@ export class Battlefield {
       this.group.add(mesh);
     }
     const watchtower = new THREE.Group();
+    watchtower.userData.impactMaterial = "wood";
     for (const x of [-2.1, 2.1])
       for (const z of [-2.1, 2.1])
         this.block(watchtower, [0.24, 11, 0.24], [x, 5.5, z], 0x6e6249);
