@@ -1,7 +1,9 @@
-import type * as THREE from "three";
+import * as THREE from "../pc-shim/index.ts";
 import type { EnemyType, Weapon } from "../types.ts";
 
 export interface Enemy {
+  /** Stable gameplay identity; never couple HUD/collision state to render IDs. */
+  id: number;
   type: EnemyType;
   group: THREE.Group;
   hp: number;
@@ -44,6 +46,18 @@ export interface Effect {
   growth: number;
 }
 
+export interface SpriteEffect {
+  sprite: THREE.Sprite;
+  velocity: THREE.Vector3;
+  life: number;
+  duration: number;
+  growth: number;
+  opacity: number;
+  spin: number;
+  lift: number;
+  isFlash: boolean;
+}
+
 export interface Tracer {
   line: THREE.Line;
   life: number;
@@ -76,9 +90,11 @@ export interface MuzzleSmokeTrail {
 
 export interface MuzzleFlashLight {
   light: THREE.PointLight;
+  sprite: THREE.Sprite;
   life: number;
   maxLife: number;
   baseIntensity: number;
+  baseScale: number;
 }
 
 export interface WreckageParticle {

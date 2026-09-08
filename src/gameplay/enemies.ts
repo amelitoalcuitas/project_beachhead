@@ -1,4 +1,4 @@
-import * as THREE from "three";
+import * as THREE from "../pc-shim/index.ts";
 import { terrainHeight } from "../rendering/battlefield.ts";
 import { enemyModel, animateEnemy } from "../rendering/enemy-models.ts";
 import { specs, weaponEffectiveness } from "../content.ts";
@@ -15,7 +15,10 @@ import type { CombatHud } from "../ui/hud.ts";
 import type { AudioManager } from "../audio/audio.ts";
 import type { ScreenMessages } from "../ui/screens.ts";
 import type { EffectsSystem } from "../rendering/effects.ts";
+import type { GunEffectsSystem } from "../rendering/gun-effects.ts";
 import type { ProjectileSystem } from "./projectiles.ts";
+
+let nextEnemyId = 1;
 export function addParachute(group: THREE.Group) {
   const parachute = new THREE.Group();
   parachute.name = "parachute";
@@ -62,6 +65,7 @@ export interface EnemyDeps {
   audio: AudioManager;
   screens: ScreenMessages;
   effects: EffectsSystem;
+  gunEffects?: GunEffectsSystem;
   projectiles: ProjectileSystem;
   sphereGeometry: THREE.SphereGeometry;
   projectileLayer: THREE.Group;
@@ -108,6 +112,7 @@ export class EnemySystem {
   }
   if (parachuting) addParachute(group);
   const enemy: Enemy = {
+    id: nextEnemyId++,
     type,
     group,
     hp: definition.hp,
@@ -312,13 +317,8 @@ export class EnemySystem {
   );
   this.deps.projectileLayer.add(mesh);
   this.deps.effects.sparks(origin);
-  this.deps.effects.addMuzzleFlash(
-    origin,
-    grenade ? 0x9fbf6a : 0xff7150,
-    enemy.type === "tank" ? 30 : 18,
-    enemy.type === "tank" ? 20 : 13,
-    0.07,
-  );
+  if (enemy.type === "tank") this.deps.gunEffects?.emitMuzzle(origin, launchDirection, "CANNON", "tank");
+  else this.deps.effects.addMuzzleFlash(origin, grenade ? 0x9fbf6a : 0xff7150, 18, 13, 0.07);
   this.deps.projectiles.addShot({
     mesh,
     velocity: new THREE.Vector3(velocity.x, velocity.y, velocity.z),
@@ -355,7 +355,7 @@ export class EnemySystem {
         animateEnemy(
           enemy.group,
           enemy.type,
-          this.deps.getSimulationTime() + enemy.group.id,
+          this.deps.getSimulationTime() + enemy.id,
           false,
         );
         continue;
@@ -395,8 +395,8 @@ export class EnemySystem {
         moving = true;
       }
       if (enemy.type === "heli") {
-        position.y = 42 + Math.sin(this.deps.getSimulationTime() * 1.2 + enemy.group.id) * 5;
-        position.x += Math.sin(this.deps.getSimulationTime() * 0.5 + enemy.group.id) * dt * 4;
+        position.y = 42 + Math.sin(this.deps.getSimulationTime() * 1.2 + enemy.id) * 5;
+        position.x += Math.sin(this.deps.getSimulationTime() * 0.5 + enemy.id) * dt * 4;
       } else position.y = terrainHeight(position.x, position.z);
       enemy.group.rotation.y = Math.atan2(
         position.x - this.deps.playerPosition.x,
@@ -406,7 +406,7 @@ export class EnemySystem {
     animateEnemy(
       enemy.group,
       enemy.type,
-      this.deps.getSimulationTime() + enemy.group.id,
+      this.deps.getSimulationTime() + enemy.id,
       moving,
     );
     if (
@@ -435,7 +435,7 @@ export class EnemySystem {
       enemy.sightTimer = 0.3;
     }
     if (!enemy.canAttack) {
-      if (this.deps.session.airWarningEnemyId === enemy.group.id) this.deps.session.airWarningEnemyId = null;
+      if (this.deps.session.airWarningEnemyId === enemy.id) this.deps.session.airWarningEnemyId = null;
       enemy.warning = 0;
       enemy.burstRemaining = 0;
       enemy.fire = Math.max(enemy.fire, 0.5);
@@ -444,7 +444,7 @@ export class EnemySystem {
     if (enemy.warning > 0) {
       enemy.warning -= dt;
       if (enemy.warning <= 0) {
-        if (this.deps.session.airWarningEnemyId === enemy.group.id) this.deps.session.airWarningEnemyId = null;
+        if (this.deps.session.airWarningEnemyId === enemy.id) this.deps.session.airWarningEnemyId = null;
         this.enemyAttack(enemy);
         enemy.fire = 1 / specs[enemy.type].attackRate + Math.random() * 2;
       }
@@ -474,7 +474,7 @@ export class EnemySystem {
       this.deps.effects.sparks(this.enemyOrigin(enemy));
       if (enemy.type === "heli" || enemy.type === "aircraft") {
         this.deps.audio.sound("air-warning");
-        this.deps.session.airWarningEnemyId = enemy.group.id;
+        this.deps.session.airWarningEnemyId = enemy.id;
       }
     } else {
       this.enemyAttack(enemy);

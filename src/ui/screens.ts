@@ -39,8 +39,9 @@ export class ScreenMessages {
   }
 
   clearTimers() {
-    window.clearTimeout(this.bannerTimer);
-    window.clearTimeout(this.messageTimer);
+    const timerHost = typeof window === "undefined" ? globalThis : window;
+    timerHost.clearTimeout(this.bannerTimer);
+    timerHost.clearTimeout(this.messageTimer);
     document.querySelector("#message")?.classList.remove("show");
   }
 

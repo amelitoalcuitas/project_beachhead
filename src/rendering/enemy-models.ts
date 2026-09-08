@@ -1,4 +1,4 @@
-import * as THREE from "three";
+import * as THREE from "../pc-shim/index.ts";
 import { isInfantryType, type EnemyType } from "../types.ts";
 
 const materials = new Map<number, THREE.MeshStandardMaterial>();

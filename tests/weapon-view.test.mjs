@@ -1,11 +1,33 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import * as THREE from "three";
+import * as THREE from "../src/pc-shim/index.ts";
 import { WeaponView } from "../src/rendering/weapon-view.ts";
+import * as pc from "playcanvas";
 
 // WeaponView only needs viewport dimensions; geometry checks need no WebGL context.
 globalThis.innerWidth = 1280;
 globalThis.innerHeight = 720;
+
+test("heavy weapon hip-fire barrel axes converge on the crosshair through sway and recoil", () => {
+  for (const weapon of ["CANNON", "BOFORS"]) {
+    const view = new WeaponView();
+    view.select(weapon, true);
+    for (const time of [0, 0.5, 1, 2]) {
+      view.fire(weapon);
+      view.update(0.03, time, false, false, 3, 0);
+      const flash = view.scene.getObjectByName("weapon-muzzle-flash");
+      const mount = flash.parent;
+      const renderedMount = new pc.GraphNode();
+      renderedMount.setPosition(...mount.position.toArray());
+      renderedMount.setEulerAngles(...[mount.rotation.x, mount.rotation.y, mount.rotation.z].map(angle => angle * 180 / Math.PI));
+      const muzzle = renderedMount.getWorldTransform().transformPoint(new pc.Vec3(...flash.position.toArray()));
+      const forward = renderedMount.forward;
+      const distance = (-8 - muzzle.z) / forward.z;
+      assert.ok(distance > 0, "convergence is ahead of the muzzle");
+      assert.ok(Math.hypot(muzzle.x + distance * forward.x, muzzle.y + distance * forward.y) < 1e-5, weapon);
+    }
+  }
+});
 
 function readyCannon() {
   const view = new WeaponView();

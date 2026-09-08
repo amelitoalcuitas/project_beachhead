@@ -1,4 +1,4 @@
-import * as THREE from "three";
+import * as THREE from "../pc-shim/index.ts";
 import type { Weapon } from "../types.ts";
 
 export type SoundKind =
@@ -11,8 +11,10 @@ export class AudioManager {
   private explosionReverbBuffer?: AudioBuffer;
 
   initialize() {
+    const AudioContextCtor = globalThis.AudioContext;
+    if (!AudioContextCtor) return;
     if (!this.audioContext) {
-      this.audioContext = new AudioContext();
+      this.audioContext = new AudioContextCtor();
       this.noiseBuffer = this.audioContext.createBuffer(
         1,
         this.audioContext.sampleRate,

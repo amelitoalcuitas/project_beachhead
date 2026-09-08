@@ -1,4 +1,4 @@
-import * as THREE from "three";
+import * as THREE from "../pc-shim/index.ts";
 import type { Enemy, Shot } from "./entities.ts";
 import {
   grenadeDamageAtDistance, groundImpactVolume, projectileImpact,
@@ -10,6 +10,7 @@ import type { AudioManager } from "../audio/audio.ts";
 import type { EffectsSystem } from "../rendering/effects.ts";
 import type { EnemySystem } from "./enemies.ts";
 import { releaseMesh } from "../rendering/effects.ts";
+import type { GunEffectsSystem } from "../rendering/gun-effects.ts";
 
 export const PLAYER_PROJECTILE_GRAVITY = 9.81;
 export const ENEMY_PROJECTILE_GRAVITY = 24.5 * 0.3;
@@ -19,6 +20,7 @@ export interface ProjectileDeps {
   projectileLayer: THREE.Group;
   audio: AudioManager;
   effects: EffectsSystem;
+  gunEffects?: GunEffectsSystem;
   enemies: EnemySystem | null;
   muzzlePan: (position: THREE.Vector3) => number;
   onHurtPlayer: (amount: number, sourceBearing?: number) => void;
@@ -177,7 +179,7 @@ export class ProjectileSystem {
           direction,
         );
         if (shot.weapon === "MG") {
-          this.deps.effects.ricochetSparks(shot.mesh.position);
+          this.deps.gunEffects?.emitMgImpact(shot.mesh.position, enemyHit?.type);
           // Only play the ground/obstruction ricochet sound when the bullet
           // didn't hit an enemy - enemy hits already get the hit-marker sound.
           if (!enemyHit) {
@@ -200,6 +202,7 @@ export class ProjectileSystem {
             impactVolume,
             shot.weapon === "BOFORS" ? "flak" : "he",
           );
+          this.deps.gunEffects?.addCannonImpactMark(shot.mesh.position, shot.weapon);
         }
       }
     }

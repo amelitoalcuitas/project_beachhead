@@ -1,4 +1,4 @@
-import type * as THREE from "three";
+import * as THREE from "../pc-shim/index.ts";
 import type { Game } from "../game/game.ts";
 import type { Weapon } from "../types.ts";
 
@@ -19,14 +19,18 @@ export function bindControls(game: Game) {
       game.pause();
     }
   });
-  document.addEventListener("pointerlockerror", () => {
-    game.message("CLICK TO AIM · ARROW KEYS ALSO AVAILABLE");
-    game.armPointerLockRetry();
-  });
-  window.addEventListener("blur", () => game.pause());
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) game.pause();
-  });
+  if (typeof document.addEventListener === "function") {
+    document.addEventListener("pointerlockerror", () => {
+      game.message("CLICK TO AIM · ARROW KEYS ALSO AVAILABLE");
+      game.armPointerLockRetry();
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) game.pause();
+    });
+  }
+  if (typeof window.addEventListener === "function") {
+    window.addEventListener("blur", () => game.pause());
+  }
   window.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       if (game.state === "paused") {

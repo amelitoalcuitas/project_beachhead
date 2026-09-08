@@ -1,5 +1,6 @@
-import * as THREE from "three";
+import * as THREE from "../pc-shim/index.ts";
 import type { Weapon } from "../types.ts";
+import { createBarrelJacket } from "./weapon-geometry.ts";
 
 export class WeaponView {
   readonly scene = new THREE.Scene();
@@ -34,6 +35,11 @@ export class WeaponView {
   private mgCaseIndex = 0;
   private mgShotTime = Infinity;
   private mgBeltRounds: THREE.Group[] = [];
+  private readonly hipPositions: Record<Weapon, THREE.Vector3> = {
+    MG: new THREE.Vector3(0.3, -0.1, 0),
+    CANNON: new THREE.Vector3(0.42, -0.8, -0.65),
+    BOFORS: new THREE.Vector3(0.55, -0.4, -0.3),
+  };
   private readonly aimPositions: Record<Weapon, THREE.Vector3> = {
     MG: new THREE.Vector3(0.12, -0.19, -0.6),
     CANNON: new THREE.Vector3(0.12, 0.32, -1.45),
@@ -104,6 +110,7 @@ export class WeaponView {
     };
     for (const name of ["MG", "CANNON", "BOFORS"] as const) {
       const model = new THREE.Group();
+      model.userData.skipRaycast = true;
       if (name === "MG") {
         this.mgBarrelGroup.name = "mg-barrel-assembly";
         this.mgBolt.name = "mg-bolt";
@@ -131,33 +138,7 @@ export class WeaponView {
         part(this.mgTopCover, [0.25, 0.016, 0.6], [0, 0.024, 0.4], steel);
         part(this.mgTopCover, [0.08, 0.035, 0.07], [0, 0.026, 0.77], dark);
 
-        // Roll a perforated sheet into a fixed cooling jacket around the recoiling barrel.
-        const jacketRadius = 0.085;
-        const jacketLength = 1.45;
-        const circumference = Math.PI * 2 * jacketRadius;
-        const sheet = new THREE.Shape();
-        sheet.moveTo(0, 0);
-        sheet.lineTo(circumference, 0);
-        sheet.lineTo(circumference, jacketLength);
-        sheet.lineTo(0, jacketLength);
-        sheet.closePath();
-        for (let row = 0; row < 12; row++) {
-          for (let column = 0; column < 8; column++) {
-            const hole = new THREE.Path();
-            hole.absarc((column + 0.5) * circumference / 8, 0.085 + row * 0.115, 0.021, 0, Math.PI * 2, true);
-            sheet.holes.push(hole);
-          }
-        }
-        const jacketGeometry = new THREE.ExtrudeGeometry(sheet, {depth: 0.006, bevelEnabled: false, curveSegments: 4});
-        const vertices = jacketGeometry.getAttribute("position");
-        for (let i = 0; i < vertices.count; i++) {
-          const angle = vertices.getX(i) / jacketRadius;
-          const radius = jacketRadius + vertices.getZ(i);
-          vertices.setXYZ(i, Math.cos(angle) * radius, Math.sin(angle) * radius, -vertices.getY(i));
-        }
-        jacketGeometry.computeVertexNormals();
-        jacketGeometry.computeBoundingSphere();
-        const jacket = new THREE.Mesh(jacketGeometry, steel);
+        const jacket = new THREE.Mesh(createBarrelJacket(), steel);
         jacket.name = "mg-barrel-jacket";
         jacket.position.set(0.12, -0.48, -1.38);
         model.add(jacket);
@@ -388,15 +369,15 @@ export class WeaponView {
       this.models.set(name, model);
     }
     // Anchor the base at the opening; spin around the bore without tilting the flame.
-    const flashGeometry = new THREE.ConeGeometry(0.17, 0.6, 6);
-    flashGeometry.translate(0, 0.3, 0);
+    const flashGeometry = new THREE.ConeGeometry(0.09, 0.5, 10);
+    flashGeometry.translate(0, 0.25, 0);
     flashGeometry.rotateX(-Math.PI / 2);
     this.flash = new THREE.Mesh(
       flashGeometry,
       new THREE.MeshBasicMaterial({
         color: 0xffd077,
         transparent: true,
-        opacity: 0.9,
+        opacity: 0.72,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
       }),
@@ -429,16 +410,27 @@ export class WeaponView {
       this.mgCaseIndex = (this.mgCaseIndex + 1) % this.mgSpentCases.length;
     }
     this.recoil = weapon === "MG" ? 0.06 : weapon === "CANNON" ? 0.25 : 0.12;
-    this.flashTime = weapon === "MG" ? 0.04 : weapon === "CANNON" ? 0.12 : 0.065;
-    const flashScale = weapon === "MG" ? 1.0 : weapon === "CANNON" ? 1.9 : 1.1;
+    this.flashTime = weapon === "MG" ? 0.045 : weapon === "CANNON" ? 0.085 : 0.065;
+    const flashScale = weapon === "MG" ? 0.7 : weapon === "CANNON" ? 1.05 : 0.85;
     this.flash.scale.setScalar(flashScale);
     const flashColor =
-      weapon === "MG" ? 0xffe8a0 : weapon === "CANNON" ? 0xd4c8a0 : 0xffe9a0;
+      weapon === "MG" ? 0xffd47d : weapon === "CANNON" ? 0xffb45d : 0xffc069;
     (this.flash.material as THREE.MeshBasicMaterial).color.setHex(flashColor);
+    this.flash.rotation.z = Math.random() * Math.PI * 2;
   }
   muzzleScreenPosition() {
     this.scene.updateMatrixWorld(true);
     return this.flash.getWorldPosition(new THREE.Vector3()).project(this.camera);
+  }
+  muzzleViewPose() {
+    this.scene.updateMatrixWorld(true);
+    const position = this.flash.getWorldPosition(new THREE.Vector3());
+    const direction = new THREE.Vector3(0, 0, -1)
+      .applyAxisAngle(new THREE.Vector3(1, 0, 0), this.mount.rotation.x)
+      .applyAxisAngle(new THREE.Vector3(0, 1, 0), this.mount.rotation.y)
+      .applyAxisAngle(new THREE.Vector3(0, 0, 1), this.mount.rotation.z)
+      .normalize();
+    return { position, direction };
   }
   update(
     dt: number,
@@ -457,16 +449,18 @@ export class WeaponView {
     const isCannon = this.current === "CANNON";
     const isCannonAds = zoom && isCannon;
     const tiltForReload = reloading && this.current === "BOFORS";
-    const adsPitch = isCannonAds ? 0.1 : 0;
+    const hipPosition = this.hipPositions[this.current];
+    const viewPitch = isCannonAds ? 0.1 : 0;
     this.mount.position.set(
-      zoom ? -aimPosition.x : 0.3,
-      (zoom ? -aimPosition.y : -0.1) +
+      zoom ? -aimPosition.x : hipPosition.x,
+      (zoom ? -aimPosition.y : hipPosition.y) +
         (tiltForReload ? -0.25 : 0) -
         this.swap * 0.7 +
         (zoom ? 0 : Math.sin(time * 1.8) * 0.006),
-      (zoom ? (isCannon ? -0.15 : this.current === "BOFORS" ? 0.25 : 0.05) : isCannon ? -0.45 : 0) + (this.current === "MG" && !zoom ? this.recoil * 0.3 : 0),
+      (zoom ? (isCannon ? -0.15 : this.current === "BOFORS" ? 0.25 : 0.05) : hipPosition.z) + (this.current === "MG" && !zoom ? this.recoil * 0.3 : 0),
     );
-    this.mount.rotation.set(adsPitch + (tiltForReload ? -0.2 : 0), 0, tiltForReload ? -0.1 : 0);
+    this.mount.rotation.set(viewPitch + (tiltForReload ? -0.2 : 0), 0, tiltForReload ? -0.1 : 0);
+    if (!zoom && this.current !== "MG" && !tiltForReload) this.alignHipBarrel();
     if (isCannon) this.updateCannon(dt, reloading, magazine, reloadProgress);
     if (this.current === "MG") this.updateMG(dt, reloading, magazine, reloadProgress, reloadMagazine);
     this.boforsBarrel.position.z = this.recoil;
@@ -478,8 +472,22 @@ export class WeaponView {
     if (this.current === "BOFORS") this.flash.position.z += this.recoil;
     if (isCannon) this.flash.position.z += this.cannonRecoiling.position.z;
     if (this.current === "MG") this.flash.position.z += this.mgBarrelGroup.position.z;
-    this.flash.visible = this.flashTime > 0;
-    this.flash.rotation.z = time * 40;
+    // The hidden mesh is only a muzzle anchor. GunEffectsSystem renders the
+    // visible flash natively in PlayCanvas's weapon overlay layer.
+    this.flash.visible = false;
+  }
+  private alignHipBarrel() {
+    // Aim the actual bore, rather than the model origin, at the reticle in
+    // the separate weapon camera. Both yaw and pitch must account for its offset.
+    const convergenceDepth = 8;
+    const bore = this.muzzlePositions[this.current];
+    const dx = -this.mount.position.x;
+    const dy = -this.mount.position.y;
+    const dz = -convergenceDepth - this.mount.position.z;
+    const yaw = Math.atan2(-dx, -dz) + Math.asin(bore.x / Math.hypot(dx, dz));
+    const localZ = Math.sin(yaw) * dx + Math.cos(yaw) * dz;
+    const pitch = Math.atan2(dy, -localZ) - Math.asin(bore.y / Math.hypot(dy, localZ));
+    this.mount.rotation.set(pitch, yaw, 0, "YXZ");
   }
   private updateMG(dt: number, reloading: boolean, magazine: number, reloadProgress: number, reloadMagazine: number) {
     this.mgShotTime += dt;

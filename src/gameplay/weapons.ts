@@ -1,4 +1,4 @@
-import * as THREE from "three";
+import * as THREE from "../pc-shim/index.ts";
 import { weapons, weaponRoles } from "../content.ts";
 import type { Weapon } from "../types.ts";
 import type { SessionState } from "../game/game-state.ts";
@@ -6,11 +6,13 @@ import type { WeaponView } from "../rendering/weapon-view.ts";
 import type { ScreenMessages } from "../ui/screens.ts";
 import type { AudioManager } from "../audio/audio.ts";
 import type { EffectsSystem } from "../rendering/effects.ts";
+import type { GunEffectsSystem } from "../rendering/gun-effects.ts";
 import type { ProjectileSystem } from "./projectiles.ts";
 
 export const spreadBiasMax = { MG: 0.018, CANNON: 0.004, BOFORS: 0.006 } as const;
 export const MG_ADS_SPREAD_MULTIPLIER = 0.2;
 export const MG_MIN_BLOOM = 0.22;
+export const AIM_CONVERGENCE_DISTANCE = 200;
 
 export function bloomFromHeat(heat: number) {
   const t = THREE.MathUtils.clamp(heat, 0, 1);
@@ -49,6 +51,7 @@ export interface WeaponDeps {
   screens: ScreenMessages;
   audio: AudioManager;
   effects: EffectsSystem | null;
+  gunEffects?: GunEffectsSystem;
   projectiles: ProjectileSystem | null;
   sphereGeometry: THREE.SphereGeometry;
   projectileLayer: THREE.Group;
@@ -56,6 +59,7 @@ export interface WeaponDeps {
   setShake: (amount: number) => void;
   getShake: () => number;
   addShake: (amount: number) => void;
+  aimDistance?: (direction: THREE.Vector3) => number;
 }
 
 export class WeaponSystem {
@@ -68,6 +72,7 @@ export class WeaponSystem {
   zoom = false;
   muzzleSmoke = 0;
   smokeAccumulator = 0;
+  shotSmokeAccumulator = 0;
   spreadHeat = 0;
   spreadAngle = 0;
   spreadX = 0;
@@ -102,7 +107,11 @@ export class WeaponSystem {
 
   muzzlePan(position: THREE.Vector3) {
     this.deps.camera.getWorldDirection(this.deps.lookDirection);
-    this.muzzleRight.setFromMatrixColumn(this.deps.camera.matrixWorld, 0).normalize();
+    this.muzzleRight.set(
+      Math.cos(this.deps.camera.rotation.y),
+      0,
+      -Math.sin(this.deps.camera.rotation.y),
+    );
     const toTarget = position.clone().sub(this.deps.playerPosition);
     if (toTarget.lengthSq() < 1e-6) return 0;
     toTarget.normalize();
@@ -151,9 +160,8 @@ export class WeaponSystem {
     this.deps.weaponView.fire(this.weapon);
     this.deps.setShake(this.weapon === "MG" ? 0.025 : 0.1);
     this.deps.audio.sound(this.weapon === "MG" ? "gun" : this.weapon === "CANNON" ? "cannon" : "bofors");
-  
   const smokeBuildup =
-    this.weapon === "MG" ? 0.08 : this.weapon === "CANNON" ? 0.15 : 0.12;
+    this.weapon === "MG" ? 0.055 : this.weapon === "CANNON" ? 0.12 : 0.09;
   this.muzzleSmoke = Math.min(1, this.muzzleSmoke + smokeBuildup);
   
   // Heat rises steadily; MG cone starts at MG_MIN_BLOOM and eases up from there
@@ -174,36 +182,46 @@ export class WeaponSystem {
   this.spreadX = THREE.MathUtils.clamp(this.spreadX + (Math.random() - 0.5) * kick * 2, -bias, bias);
   this.spreadY = THREE.MathUtils.clamp(this.spreadY + (Math.random() - 0.5) * kick * 2, -bias, bias);
   
-  this.deps.camera.getWorldDirection(this.deps.lookDirection);
-  // Apply spread offset to aim direction (aim stays from the eye/this.deps.camera so
-  // the crosshair remains accurate; only the visible origin below is offset)
-  const aimDirection = this.deps.lookDirection.clone();
-  aimDirection.x += this.spreadX;
-  aimDirection.y += this.spreadY;
-  // Add random spread within the current spread angle
-  const randomSpread = (Math.random() - 0.5) * this.spreadAngle;
-  const randomYaw = (Math.random() - 0.5) * this.spreadAngle;
-  aimDirection.applyAxisAngle(new THREE.Vector3(1, 0, 0), randomSpread);
-  aimDirection.applyAxisAngle(new THREE.Vector3(0, 1, 0), randomYaw);
-  aimDirection.normalize();
-  
   // Calculate muzzle position based on this.weapon type (offset to match the
   // on-screen gun position rather than spawning from dead-center)
   const muzzleOffset = this.muzzleOffsetForWeapon(this.weapon);
   const origin = this.muzzleOrigin(muzzleOffset);
-  
-  // Every successful shot contributes to the live plume. Residual barrel
-  // smoke continues separately as the accumulated heat dissipates.
-  this.deps.effects.addMuzzleSmoke(origin, this.weapon);
-  this.deps.effects.startMuzzleSmokeTrail(origin, this.weapon);
-  // Briefly light up the surroundings with each shot - heavier weapons throw
-  // a bigger, longer-lived flash than the rapid-fire MG.
-  this.deps.effects.addMuzzleFlash(
+
+  // Build spread in camera space. Adding directly to world X/Y made the cone
+  // rotate incorrectly as the player turned, while firing the camera's forward
+  // vector from an offset muzzle left every round permanently beside the reticle.
+  this.deps.camera.getWorldDirection(this.deps.lookDirection);
+  const cameraRight = this.muzzleRight.set(
+    Math.cos(this.deps.camera.rotation.y),
+    0,
+    -Math.sin(this.deps.camera.rotation.y),
+  ).clone();
+  const cameraUp = cameraRight.clone().cross(this.deps.lookDirection).normalize();
+  const aimRay = this.deps.lookDirection.clone()
+    .addScaledVector(cameraRight, this.spreadX + (Math.random() - 0.5) * this.spreadAngle)
+    .addScaledVector(cameraUp, this.spreadY + (Math.random() - 0.5) * this.spreadAngle)
+    .normalize();
+  const aimDistance = Math.max(
+    muzzleOffset,
+    this.deps.aimDistance?.(aimRay) ?? AIM_CONVERGENCE_DISTANCE,
+  );
+  const aimPoint = this.deps.playerPosition.clone()
+    .addScaledVector(aimRay, aimDistance);
+  const aimDirection = aimPoint.sub(origin).normalize();
+
+  // Heavy guns vent on every shot. The automatic MG emits a smaller puff every
+  // few rounds so rapid fire cannot stack an opaque cloud over the sightline.
+  this.shotSmokeAccumulator += this.weapon === "MG" ? 0.28 : 1;
+  if (this.shotSmokeAccumulator >= 1) {
+    this.deps.gunEffects?.emitShotSmoke(origin, aimDirection, this.weapon);
+    this.shotSmokeAccumulator -= 1;
+  }
+  this.deps.gunEffects?.emitMuzzle(
     origin,
-    this.weapon === "MG" ? 0xffe8a0 : this.weapon === "CANNON" ? 0xd4c8a0 : 0xff9955,
-    this.weapon === "MG" ? 14 : 36,
-    this.weapon === "MG" ? 12 : 22,
-    this.weapon === "MG" ? 0.05 : 0.11,
+    aimDirection,
+    this.weapon,
+    "player",
+    this.deps.weaponView.muzzleViewPose(),
   );
 
   if (this.weapon === "MG") {
@@ -265,9 +283,13 @@ export class WeaponSystem {
     this.spreadY = THREE.MathUtils.lerp(this.spreadY, 0, Math.min(1, spreadRecovery * dt));
     this.applyBloomSpread();
     if (!this.trigger && this.weapon === "MG" && this.muzzleSmoke > 0.05) {
-      this.smokeAccumulator += dt * (1.2 + this.muzzleSmoke * 3.8);
+      this.smokeAccumulator += dt * (0.55 + this.muzzleSmoke * 1.8);
       while (this.smokeAccumulator >= 1) {
-        this.deps.effects.addMuzzleSmoke(this.muzzleOrigin(muzzleOffsetForWeapon("MG")), "MG", true);
+        this.deps.camera.getWorldDirection(this.deps.lookDirection);
+        this.deps.gunEffects?.emitResidualMgSmoke(
+          this.muzzleOrigin(muzzleOffsetForWeapon("MG")),
+          this.deps.lookDirection,
+        );
         this.smokeAccumulator--;
       }
     } else if (this.trigger || this.muzzleSmoke <= 0.05) {
@@ -285,11 +307,11 @@ export class WeaponSystem {
     }
   }
 
-  resetState() {
+  resetState(keepWeapon = false) {
     this.reload = this.cooldown = this.switchTime = 0;
     this.trigger = this.zoom = false;
-    this.muzzleSmoke = this.smokeAccumulator = 0;
+    this.muzzleSmoke = this.smokeAccumulator = this.shotSmokeAccumulator = 0;
     this.spreadHeat = this.spreadAngle = this.spreadX = this.spreadY = 0;
-    this.weapon = "MG";
+    if (!keepWeapon) this.weapon = "MG";
   }
 }

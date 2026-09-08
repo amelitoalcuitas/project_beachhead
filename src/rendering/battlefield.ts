@@ -1,4 +1,4 @@
-import * as THREE from "three";
+import * as THREE from "../pc-shim/index.ts";
 
 export function terrainHeight(x: number, z: number) {
   const distance = Math.hypot(x, z - 18);
@@ -116,7 +116,7 @@ export class Battlefield {
     this.water.rotation.x = -Math.PI / 2;
     this.water.position.set(0, 0.18, -570);
     this.group.add(this.water);
-    // Instanced scrub and stones give the beach texture without hundreds of draw calls.
+    // Scattered stones add texture to the open sand.
     const rocks = new THREE.InstancedMesh(
       new THREE.DodecahedronGeometry(1, 0),
       this.material(0x7b7764),
@@ -139,21 +139,6 @@ export class Battlefield {
     rocks.castShadow = true;
     rocks.receiveShadow = true;
     this.group.add(rocks);
-    const grasses = new THREE.InstancedMesh(
-      new THREE.ConeGeometry(0.7, 2, 3),
-      this.material(0x717650),
-      350,
-    );
-    for (let i = 0; i < 350; i++) {
-      const x = (Math.random() - 0.5) * 800,
-        z = Math.random() * 630 - 170;
-      dummy.position.set(x, terrainHeight(x, z) + 0.5, z);
-      dummy.rotation.set(0, Math.random() * 6, 0.2);
-      dummy.scale.set(1, 1, 1);
-      dummy.updateMatrix();
-      grasses.setMatrixAt(i, dummy.matrix);
-    }
-    this.group.add(grasses);
     for (const [x, z, height] of [
       [-32, -22, 14],
       [-39, -28, 17],

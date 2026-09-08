@@ -1,10 +1,10 @@
-import * as THREE from "three";
+import * as THREE from "../pc-shim/index.ts";
 import { terrainHeight } from "./battlefield.ts";
 import type { Weapon } from "../types.ts";
 import type { AudioManager } from "../audio/audio.ts";
 import type {
   Corpse, Effect, Enemy, MuzzleFlashLight, MuzzleSmoke, MuzzleSmokeTrail,
-  ScorchMark, Tracer, Wreckage,
+  ScorchMark, SpriteEffect, Tracer, Wreckage,
 } from "../gameplay/entities.ts";
 import { isInfantryType } from "../types.ts";
 import { specs } from "../content.ts";
@@ -36,12 +36,14 @@ export interface EffectsDeps {
 export class EffectsSystem {
   private readonly deps: EffectsDeps;
   readonly effects: Effect[] = [];
+  readonly spriteEffects: SpriteEffect[] = [];
   readonly tracers: Tracer[] = [];
   readonly muzzleSmokes: MuzzleSmoke[] = [];
   readonly wreckages: Wreckage[] = [];
   readonly corpses: Corpse[] = [];
   readonly scorchMarks: ScorchMark[] = [];
   private smokeTexture!: THREE.CanvasTexture;
+  private flashTexture!: THREE.CanvasTexture;
   private scorchTexture!: THREE.CanvasTexture;
   private muzzleSmokeTrail?: MuzzleSmokeTrail;
   private muzzleLightPool!: THREE.PointLight[];
@@ -55,6 +57,7 @@ export class EffectsSystem {
     this.sphereGeometry = sphereGeometry;
     this.wreckageBoxGeometry = wreckageBoxGeometry;
     this.smokeTexture = this.buildSmokeTexture();
+    this.flashTexture = this.buildFlashTexture();
     this.scorchTexture = this.buildScorchTexture();
     this.muzzleLightPool = Array.from({ length: 12 }, () => {
       const light = new THREE.PointLight(0xffffff, 0, 14, 2);
@@ -93,6 +96,34 @@ export class EffectsSystem {
     const t = new THREE.CanvasTexture(canvas); t.needsUpdate=true; return t;
   }
 
+  private buildFlashTexture() {
+    const size = 128;
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext("2d")!;
+    const center = size / 2;
+    const glow = ctx.createRadialGradient(center, center, 0, center, center, center);
+    glow.addColorStop(0, "rgba(255,255,245,1)");
+    glow.addColorStop(0.12, "rgba(255,236,170,0.98)");
+    glow.addColorStop(0.38, "rgba(255,150,45,0.62)");
+    glow.addColorStop(1, "rgba(255,90,10,0)");
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(center, center, center, 0, Math.PI * 2);
+    ctx.fill();
+    const t = new THREE.CanvasTexture(canvas);
+    t.needsUpdate = true;
+    return t;
+  }
+
+  private cameraRight() {
+    return new THREE.Vector3(
+      Math.cos(this.deps.camera.rotation.y),
+      0,
+      -Math.sin(this.deps.camera.rotation.y),
+    );
+  }
+
   addMuzzleFlash(
     position: THREE.Vector3,
     color: number,
@@ -103,13 +134,79 @@ export class EffectsSystem {
     const light = this.muzzleLightPool[this.muzzleLightCursor];
     this.muzzleLightCursor = (this.muzzleLightCursor + 1) % this.muzzleLightPool.length;
     const existing = this.activeMuzzleFlashes.findIndex((flash) => flash.light === light);
-    if (existing >= 0) this.activeMuzzleFlashes.splice(existing, 1);
+    if (existing >= 0) {
+      const replaced = this.activeMuzzleFlashes[existing];
+      replaced.sprite.removeFromParent();
+      replaced.sprite.material.dispose();
+      this.activeMuzzleFlashes.splice(existing, 1);
+    }
     light.color.setHex(color);
     light.position.copy(position);
     light.distance = distance;
     light.intensity = intensity;
     light.visible = true;
-    this.activeMuzzleFlashes.push({ light, life: duration, maxLife: duration, baseIntensity: intensity });
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: this.flashTexture,
+      color,
+      transparent: true,
+      opacity: 1,
+      depthWrite: false,
+      depthTest: false,
+      blending: THREE.AdditiveBlending,
+      rotation: Math.random() * Math.PI * 2,
+    }));
+    const baseScale = THREE.MathUtils.clamp(0.38 + intensity * 0.022, 0.55, 1.25);
+    sprite.position.copy(position);
+    sprite.scale.set(baseScale * 1.45, baseScale, 1);
+    sprite.renderOrder = 3;
+    this.deps.effectLayer.add(sprite);
+    this.activeMuzzleFlashes.push({
+      light,
+      sprite,
+      life: duration,
+      maxLife: duration,
+      baseIntensity: intensity,
+      baseScale,
+    });
+  }
+
+  private addSpriteEffect(
+    position: THREE.Vector3,
+    color: number,
+    size: number,
+    duration: number,
+    velocity: THREE.Vector3,
+    growth: number,
+    opacity: number,
+    isFlash = false,
+    lift = 0,
+  ) {
+    if (this.spriteEffects.length >= 120) return;
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: isFlash ? this.flashTexture : this.smokeTexture,
+      color,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      depthTest: !isFlash,
+      blending: isFlash ? THREE.AdditiveBlending : THREE.NormalBlending,
+      rotation: Math.random() * Math.PI * 2,
+    }));
+    sprite.position.copy(position);
+    sprite.scale.set(size, size, 1);
+    sprite.renderOrder = isFlash ? 3 : 1;
+    this.deps.smokeLayer.add(sprite);
+    this.spriteEffects.push({
+      sprite,
+      velocity,
+      life: duration,
+      duration,
+      growth,
+      opacity,
+      spin: (Math.random() - 0.5) * (isFlash ? 3 : 0.8),
+      lift,
+      isFlash,
+    });
   }
 
   addEffect(
@@ -556,6 +653,16 @@ export class EffectsSystem {
     new THREE.Vector3(),
     style === "vehicle" ? 10 : 8,
   );
+  this.addSpriteEffect(
+    position,
+    flashColor,
+    size * (style === "vehicle" ? 1.5 : 1.15),
+    style === "vehicle" ? 0.24 : 0.16,
+    new THREE.Vector3(),
+    size * 2.5,
+    0.95,
+    true,
+  );
   if (style === "vehicle") {
     this.addEffect(
       position,
@@ -588,6 +695,30 @@ export class EffectsSystem {
       ),
       i < 4 ? 0.3 : 1.2,
     );
+  const smokeCount = style === "vehicle" ? 7 : style === "flak" ? 4 : 5;
+  for (let i = 0; i < smokeCount; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const outwardSpeed = size * (0.45 + Math.random() * 0.9);
+    this.addSpriteEffect(
+      position.clone().add(new THREE.Vector3(
+        Math.cos(angle) * size * 0.12,
+        Math.random() * size * 0.22,
+        Math.sin(angle) * size * 0.12,
+      )),
+      i === 0 && style !== "flak" ? 0x8b745c : debrisColor,
+      size * (0.24 + Math.random() * 0.2),
+      0.85 + Math.random() * (style === "vehicle" ? 1.15 : 0.75),
+      new THREE.Vector3(
+        Math.cos(angle) * outwardSpeed,
+        size * (0.45 + Math.random() * 0.65),
+        Math.sin(angle) * outwardSpeed,
+      ),
+      size * (0.18 + Math.random() * 0.18),
+      style === "flak" ? 0.32 : 0.4,
+      false,
+      size * 0.18,
+    );
+  }
   this.deps.audio.explosionSound(this.deps.muzzlePan(position), size, soundVolume);
   const distance = position.distanceTo(this.deps.playerPosition);
   const shakeScale = style === "vehicle" ? 0.065 : 0.05;
@@ -664,18 +795,38 @@ export class EffectsSystem {
     );
   }
   }
+  impactDust(position: THREE.Vector3) {
+  for (let i = 0; i < 2; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    this.addSpriteEffect(
+      position.clone().add(new THREE.Vector3(0, 0.04, 0)),
+      i === 0 ? 0x9a8064 : 0x66594a,
+      0.22 + Math.random() * 0.14,
+      0.42 + Math.random() * 0.25,
+      new THREE.Vector3(
+        Math.cos(angle) * (0.25 + Math.random() * 0.55),
+        0.45 + Math.random() * 0.4,
+        Math.sin(angle) * (0.25 + Math.random() * 0.55),
+      ),
+      0.42 + Math.random() * 0.25,
+      0.22,
+      false,
+      0.15,
+    );
+  }
+  }
   addMuzzleSmoke(
   position: THREE.Vector3,
   weapon: Weapon,
   residual = false,
   ) {
   const baseSize =
-    weapon === "MG" ? 0.5 : weapon === "CANNON" ? 0.95 : 0.8;
-  const puffs = residual ? 1 : weapon === "MG" ? 1 : 3;
+    weapon === "MG" ? 0.2 : weapon === "CANNON" ? 0.68 : 0.52;
+  const puffs = residual ? 1 : weapon === "MG" ? 1 : 2;
   const forward = new THREE.Vector3();
   this.deps.camera.getWorldDirection(forward);
   for (let p = 0; p < puffs; p++) {
-    if (this.muzzleSmokes.length >= 100) return;
+    if (this.muzzleSmokes.length >= 60) return;
     const material = new THREE.SpriteMaterial({
       map: this.smokeTexture,
       color:
@@ -690,7 +841,7 @@ export class EffectsSystem {
       rotation: Math.random() * Math.PI * 2,
     });
     const sprite = new THREE.Sprite(material);
-    const jitter = residual ? 0.12 : 0.26;
+    const jitter = residual ? 0.1 : 0.2;
     sprite.position.copy(position).add(
       new THREE.Vector3(
         (Math.random() - 0.5) * jitter,
@@ -702,43 +853,49 @@ export class EffectsSystem {
     sprite.scale.set(size, size, 1);
     this.deps.smokeLayer.add(sprite);
     const life = residual
-      ? 1.7 + Math.random() * 0.7
-      : 1.2 + Math.random() * 0.8;
+      ? 0.85 + Math.random() * 0.35
+      : weapon === "MG"
+        ? 0.5 + Math.random() * 0.3
+        : 0.7 + Math.random() * 0.45;
     const ejectionSpeed = residual
       ? 0.08
       : weapon === "MG"
         ? 0.65
         : 1.1;
-    const curlAxis = new THREE.Vector3()
-      .setFromMatrixColumn(this.deps.camera.matrixWorld, 0)
-      .normalize()
+    const curlAxis = this.cameraRight()
       .applyAxisAngle(
         new THREE.Vector3(0, 1, 0),
         (Math.random() - 0.5) * 0.55,
       );
+    const velocity = forward
+      .clone()
+      .multiplyScalar(ejectionSpeed)
+      .add(
+        new THREE.Vector3(
+          (Math.random() - 0.5) * 0.16,
+          0.75 + Math.random() * 0.55,
+          (Math.random() - 0.5) * 0.16,
+        ),
+      )
+      .addScaledVector(curlAxis, weapon === "MG" ? 0.42 : 0.22);
     this.muzzleSmokes.push({
       sprite,
       life,
       maxLife: life,
-      velocity: forward
-        .clone()
-        .multiplyScalar(ejectionSpeed)
-        .add(
-          new THREE.Vector3(
-            (Math.random() - 0.5) * 0.16,
-            0.9 + Math.random() * 0.75,
-            (Math.random() - 0.5) * 0.16,
-          ),
-        ),
+      velocity,
       curlAxis,
       spin: (Math.random() - 0.5) * 0.75,
       driftPhase: Math.random() * Math.PI * 2,
       driftSpeed: 1 + Math.random() * 1.1,
       driftAmount: 0.18 + Math.random() * 0.24,
-      growth: 0.48 + Math.random() * 0.35,
+      growth: weapon === "MG"
+        ? 0.17 + Math.random() * 0.12
+        : 0.3 + Math.random() * 0.2,
       opacity: residual
-        ? 0.16 + Math.random() * 0.04
-        : 0.22 + Math.random() * 0.07,
+        ? 0.05 + Math.random() * 0.02
+        : weapon === "MG"
+          ? 0.065 + Math.random() * 0.025
+          : 0.1 + Math.random() * 0.035,
     });
   }
   }
@@ -792,12 +949,10 @@ export class EffectsSystem {
     mesh,
     points,
     weapon,
-    life: 2.1,
-    maxLife: 2.1,
-    attachmentDuration: 0.32,
-    driftAxis: new THREE.Vector3()
-      .setFromMatrixColumn(this.deps.camera.matrixWorld, 0)
-      .normalize(),
+    life: 1.35,
+    maxLife: 1.35,
+    attachmentDuration: 0.22,
+    driftAxis: this.cameraRight(),
     driftPhase: Math.random() * Math.PI * 2,
   };
   }
@@ -821,9 +976,7 @@ export class EffectsSystem {
   trail.life -= dt;
   trail.driftPhase += dt * 1.15;
   const age = trail.maxLife - trail.life;
-  const cameraRight = new THREE.Vector3()
-    .setFromMatrixColumn(this.deps.camera.matrixWorld, 0)
-    .normalize();
+  const cameraRight = this.cameraRight();
   const positions = trail.mesh.geometry.getAttribute(
     "position",
   ) as THREE.BufferAttribute;
@@ -843,7 +996,7 @@ export class EffectsSystem {
       );
     }
 
-    const halfWidth = 0.035 + progress * 0.085 + age * 0.012;
+    const halfWidth = 0.025 + progress * 0.055 + age * 0.008;
     const left = point.clone().addScaledVector(cameraRight, -halfWidth);
     const right = point.clone().addScaledVector(cameraRight, halfWidth);
     positions.setXYZ(i * 2, left.x, left.y, left.z);
@@ -852,8 +1005,8 @@ export class EffectsSystem {
   positions.needsUpdate = true;
 
   const fadeIn = Math.min(1, age / 0.1);
-  const fadeOut = THREE.MathUtils.clamp(trail.life / 0.75, 0, 1);
-  trail.mesh.material.opacity = 0.25 * fadeIn * fadeOut;
+  const fadeOut = THREE.MathUtils.clamp(trail.life / 0.48, 0, 1);
+  trail.mesh.material.opacity = 0.09 * fadeIn * fadeOut;
   if (trail.life <= 0) {
     trail.mesh.removeFromParent();
     trail.mesh.geometry.dispose();
@@ -876,6 +1029,26 @@ export class EffectsSystem {
     if (effect.life <= 0) {
       releaseMesh(effect.mesh);
       this.effects.splice(i, 1);
+    }
+  }
+  for (let i = this.spriteEffects.length - 1; i >= 0; i--) {
+    const effect = this.spriteEffects[i];
+    effect.life -= dt;
+    effect.velocity.multiplyScalar(Math.exp(-dt * (effect.isFlash ? 7 : 1.8)));
+    effect.velocity.y += effect.lift * dt;
+    effect.sprite.position.addScaledVector(effect.velocity, dt);
+    effect.sprite.scale.x += effect.growth * dt;
+    effect.sprite.scale.y += effect.growth * dt;
+    const material = effect.sprite.material as THREE.SpriteMaterial;
+    material.rotation += effect.spin * dt;
+    const lifeRatio = Math.max(0, effect.life / effect.duration);
+    const age = effect.duration - effect.life;
+    const fadeIn = effect.isFlash ? 1 : Math.min(1, age / 0.07);
+    material.opacity = effect.opacity * fadeIn * Math.pow(lifeRatio, effect.isFlash ? 2.5 : 1.3);
+    if (effect.life <= 0) {
+      effect.sprite.removeFromParent();
+      material.dispose();
+      this.spriteEffects.splice(i, 1);
     }
   }
   for (let i = this.tracers.length - 1; i >= 0; i--) {
@@ -925,16 +1098,28 @@ export class EffectsSystem {
     if (flash.life <= 0) {
       flash.light.intensity = 0;
       flash.light.visible = false;
+      flash.sprite.removeFromParent();
+      flash.sprite.material.dispose();
       this.activeMuzzleFlashes.splice(i, 1);
       continue;
     }
     const t = flash.life / flash.maxLife;
     flash.light.intensity = flash.baseIntensity * t * t;
+    (flash.sprite.material as THREE.SpriteMaterial).opacity = Math.pow(t, 1.8);
+    flash.sprite.scale.set(
+      flash.baseScale * (1.45 + (1 - t) * 0.35),
+      flash.baseScale * (1 + (1 - t) * 0.2),
+      1,
+    );
   }
   }
 
   clear() {
     for (const effect of this.effects) releaseMesh(effect.mesh);
+    for (const effect of this.spriteEffects) {
+      effect.sprite.removeFromParent();
+      effect.sprite.material.dispose();
+    }
     for (const tracer of this.tracers) {
       tracer.line.removeFromParent();
       tracer.line.geometry.dispose();
@@ -955,8 +1140,15 @@ export class EffectsSystem {
     for (const flash of this.activeMuzzleFlashes) {
       flash.light.intensity = 0;
       flash.light.visible = false;
+      flash.sprite.removeFromParent();
+      flash.sprite.material.dispose();
+    }
+    // Clean up scorch marks: remove meshes and dispose resources.
+    for (const mark of this.scorchMarks) {
+      releaseMesh(mark.mesh, true);
     }
     this.effects.length = 0;
+    this.spriteEffects.length = 0;
     this.tracers.length = 0;
     this.muzzleSmokes.length = 0;
     this.wreckages.length = 0;
